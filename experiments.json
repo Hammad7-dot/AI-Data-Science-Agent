@@ -1,0 +1,28 @@
+[
+  {
+    "iteration": 1,
+    "model": "linear_regression",
+    "metric": "r2",
+    "score": 0.9024461774180497,
+    "status": "success",
+    "reason": null,
+    "hyperparams": {},
+    "feature_engineering": "basic",
+    "rationale": "Exploration phase: 'linear_regression' has no baseline yet. Trying it once with default hyperparams and basic feature engineering before spending budget refining any one model.",
+    "analysis": "linear_regression achieved r2=0.9024, meeting the target. Feature engineering used: basic.",
+    "timestamp": "2026-08-23T19:22:22.876251+00:00"
+  },
+  {
+    "iteration": 2,
+    "model": "random_forest_regressor",
+    "metric": "r2",
+    "score": 0.8752513004196268,
+    "status": "success",
+    "reason": null,
+    "hyperparams": {},
+    "feature_engineering": "basic",
+    "rationale": "Exploration phase: 'random_forest_regressor' has no baseline yet. Trying it once with default hyperparams and basic feature engineering before spending budget refining any one model.",
+    "analysis": "random_forest_regressor achieved r2=0.8753, meeting the target. Feature engineering used: basic.",
+    "timestamp": "2026-08-24T13:20:54.784955+00:00"
+  }
+]

@@ -1,0 +1,29 @@
+services:
+  agent:
+    build:
+      context: .
+      dockerfile: docker/app.Dockerfile
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./workspace:/app/workspace
+
+  # Optional: build the code-execution sandbox image too, so it's
+  # available on the host for `tools.python_runner.run_script_in_docker`
+  # (image name "ai-ds-agent-sandbox:latest") when the agent container
+  # runs with `--sandbox`. Keeping this uncommented only builds the
+  # image; it does not run as a long-lived service. For the "agent"
+  # container to actually launch sandbox containers via Docker, it
+  # would need the host's Docker socket mounted (Docker-in-Docker),
+  # e.g. `- /var/run/docker.sock:/var/run/docker.sock` -- left
+  # commented out below since it grants the container control of the
+  # host's Docker daemon and should be opted into deliberately.
+  #
+  # sandbox:
+  #   build:
+  #     context: .
+  #     dockerfile: docker/sandbox.Dockerfile
+  #   image: ai-ds-agent-sandbox:latest
+  #   # agent's `--sandbox` flag shells out to `docker run` using this
+  #   # image; requires mounting /var/run/docker.sock into the agent
+  #   # service above if running the agent itself inside Docker.
