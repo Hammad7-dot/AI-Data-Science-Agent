@@ -164,7 +164,8 @@ MODELS_DIR = os.environ.get("AGENT_MODELS_DIR", ''' + repr(models_dir) + ''')
 if MODELS_DIR:
     Path(MODELS_DIR).mkdir(parents=True, exist_ok=True)
     MODEL_PATH = str(Path(MODELS_DIR) / f"iteration_{ITERATION}_{MODEL_NAME}.joblib")
-    joblib.dump(model, MODEL_PATH)
+    exported_model = ValidatedModel(model, X_train, TARGET)
+    joblib.dump(exported_model, MODEL_PATH)
 else:
     MODEL_PATH = None
 '''
@@ -201,7 +202,11 @@ N_FEATURES = len(FEATURE_NAMES)
 TRAIN_SAMPLES = len(X_train)
 TEST_SAMPLES = len(X_holdout)
 ''' + model_save_block
-    ml_import = "from sklearn.pipeline import Pipeline\nfrom tools.ml import get_model, build_preprocessing_pipeline"
+    ml_import = (
+        "from sklearn.pipeline import Pipeline\n"
+        "from tools.ml import get_model, build_preprocessing_pipeline\n"
+        "from tools.model_export import ValidatedModel"
+    )
 
     code = f'''{header}import json
 import os
