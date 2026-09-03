@@ -72,6 +72,49 @@ def _fmt_score(score) -> str:
         return str(score)
 
 
+def validation_uncertainty_lines(best: dict | None) -> list[str]:
+    """Format cross-validation details shared by the report and CLI."""
+    if not isinstance(best, dict) or not best:
+        return ["Unavailable: no scored experiment was produced."]
+
+    scores = best.get("cv_scores")
+    if not isinstance(scores, (list, tuple)) or not scores:
+        return ["Unavailable: fold-level cross-validation details were not produced."]
+
+    lines = [f"Fold scores: {', '.join(_fmt_score(score) for score in scores)}"]
+    mean = best.get("cv_mean")
+    std = best.get("cv_std")
+    if mean is not None and std is not None:
+        lines.append(f"Mean ± standard deviation: {_fmt_score(mean)} ± {_fmt_score(std)}")
+
+    interval = best.get("cv_interval_95")
+    if isinstance(interval, (list, tuple)) and len(interval) == 2:
+        lines.append(
+            f"95% descriptive interval: [{_fmt_score(interval[0])}, {_fmt_score(interval[1])}]"
+        )
+    else:
+        lines.append("95% descriptive interval: unavailable (fewer than two folds).")
+    return lines
+
+
+def trust_artifact_paths(result: dict) -> dict[str, str]:
+    """Return promoted JSON metadata paths without opening model artifacts."""
+    best_model_path = result.get("best_model_path")
+    if not best_model_path:
+        return {}
+
+    models_dir = Path(best_model_path).parent
+    paths = {
+        "Raw input schema": models_dir / "schema.json",
+        "Model explanation": models_dir / "explainability.json",
+    }
+    return {label: str(path) for label, path in paths.items() if path.is_file()}
+
+
+def _markdown_cell(value) -> str:
+    return str(value).replace("|", "\\|").replace("\n", " ")
+
+
 def _build_report(objective: str, target_score, result: dict) -> str:
     profile = result["profile"]
     plan = result["plan"]
@@ -213,6 +256,59 @@ def _build_report(objective: str, target_score, result: dict) -> str:
             lines.append(f"- Best model saved to: {result.get('best_model_path')}")
     else:
         lines.append("No successful or scored experiment was produced.")
+    lines.append("")
+
+    lines.append("## Validation uncertainty")
+    lines.append("")
+    for detail in validation_uncertainty_lines(best):
+        lines.append(f"- {detail}")
+    lines.append("")
+
+    schema = result.get("model_schema") or (best or {}).get("model_schema")
+    lines.append("## Raw input schema")
+    lines.append("")
+    if isinstance(schema, dict) and isinstance(schema.get("raw_columns"), list):
+        lines.append(f"- Schema version: {schema.get('schema_version', 'n/a')}")
+        if schema.get("target_name") is not None:
+            lines.append(f"- Target column: `{_markdown_cell(schema.get('target_name'))}`")
+        lines.append("")
+        lines.append("| Column | Dtype family |")
+        lines.append("|---|---|")
+        dtype_families = schema.get("dtype_families") or {}
+        for column in schema["raw_columns"]:
+            lines.append(
+                f"| {_markdown_cell(column)} | {_markdown_cell(dtype_families.get(column, 'unknown'))} |"
+            )
+    else:
+        lines.append("Unavailable: raw input schema metadata was not produced.")
+    lines.append("")
+
+    explanation = result.get("explainability") or (best or {}).get("explainability")
+    lines.append("## Model explanation")
+    lines.append("")
+    if isinstance(explanation, dict) and explanation.get("available"):
+        lines.append(f"- Method: {explanation.get('method', 'n/a')}")
+        features = explanation.get("features") or []
+        ranked = sorted(
+            (row for row in features if isinstance(row, dict)),
+            key=lambda row: float(row.get("importance", 0)),
+            reverse=True,
+        )[:10]
+        if ranked:
+            lines.append("")
+            lines.append("| Rank | Feature | Importance | Coefficient |")
+            lines.append("|---|---|---|---|")
+            for rank, row in enumerate(ranked, start=1):
+                coefficient = "n/a" if row.get("coefficient") is None else _fmt_score(row.get("coefficient"))
+                lines.append(
+                    f"| {rank} | {_markdown_cell(row.get('feature', 'n/a'))} | "
+                    f"{_fmt_score(row.get('importance'))} | {coefficient} |"
+                )
+        else:
+            lines.append("Unavailable: explanation metadata did not include feature rows.")
+    else:
+        reason = explanation.get("reason") if isinstance(explanation, dict) else None
+        lines.append(f"Unavailable: {reason or 'model explanation metadata was not produced.'}")
     lines.append("")
 
     if result.get("status") not in ("success", "optimized"):

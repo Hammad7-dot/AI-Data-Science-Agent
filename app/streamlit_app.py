@@ -122,6 +122,21 @@ def _fmt_score_val(score) -> str:
         return str(score)
 
 
+def _load_json_artifact(path: str) -> dict | None:
+    try:
+        with open(path, "r", encoding="utf-8") as artifact:
+            payload = json.load(artifact)
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _format_interval(interval) -> str:
+    if isinstance(interval, (list, tuple)) and len(interval) == 2:
+        return f"[{_fmt_score_val(interval[0])}, {_fmt_score_val(interval[1])}]"
+    return "n/a"
+
+
 def _render_model_parameters(best: dict, model_path: str, feature_info_json: dict | None) -> None:
     """Model-specific interpretability view: coefficients for linear-ish
     models, feature importances for tree-based models, and a graceful
@@ -264,15 +279,19 @@ if run_clicked:
             # missing (e.g. no scored experiment at all this run).
             best_model_json = None
             feature_info_json = None
+            model_schema = result.get("model_schema")
+            explanation = result.get("explainability")
             if models_dir:
                 bm_path = os.path.join(models_dir, "best_model.json")
                 fi_path = os.path.join(models_dir, "feature_info.json")
                 if os.path.exists(bm_path):
-                    with open(bm_path, "r", encoding="utf-8") as f:
-                        best_model_json = json.load(f)
+                    best_model_json = _load_json_artifact(bm_path)
                 if os.path.exists(fi_path):
-                    with open(fi_path, "r", encoding="utf-8") as f:
-                        feature_info_json = json.load(f)
+                    feature_info_json = _load_json_artifact(fi_path)
+                if not isinstance(model_schema, dict):
+                    model_schema = _load_json_artifact(os.path.join(models_dir, "schema.json"))
+                if not isinstance(explanation, dict):
+                    explanation = _load_json_artifact(os.path.join(models_dir, "explainability.json"))
 
             # === 1. Best Model card =========================================
             # `best` (= result["best_experiment"]) is the single canonical
@@ -292,6 +311,10 @@ if run_clicked:
                     cols[0].metric("Model", best.get("model"))
                     cols[1].metric(f"Score ({best.get('metric')})", _fmt_score_val(best.get("score")))
                     cols[2].metric("Target", _fmt_score_val(target_score))
+                    trust_cols = st.columns(3)
+                    trust_cols[0].metric("CV mean", _fmt_score_val(best.get("cv_mean")))
+                    trust_cols[1].metric("CV std", _fmt_score_val(best.get("cv_std")))
+                    trust_cols[2].metric("95% interval", _format_interval(best.get("cv_interval_95")))
                     st.markdown(
                         f"**Task type:** `{plan.get('task_type')}` &nbsp;&nbsp; "
                         f"**Target met:** {'✅ Yes' if target_met else '⚠️ No'} &nbsp;&nbsp; "
@@ -323,6 +346,38 @@ if run_clicked:
                         st.write(f"Primary failure: `{primary_type}`")
                 else:
                     st.info(honest_summary_sentence(result))
+
+            st.subheader("Raw input schema")
+            if isinstance(model_schema, dict) and isinstance(model_schema.get("raw_columns"), list):
+                target_name = model_schema.get("target_name")
+                if target_name is not None:
+                    st.caption(f"Prediction input target: {target_name}")
+                dtype_families = model_schema.get("dtype_families") or {}
+                schema_rows = [
+                    {"column": column, "dtype family": dtype_families.get(column, "unknown")}
+                    for column in model_schema["raw_columns"]
+                ]
+                st.dataframe(pd.DataFrame(schema_rows), width="stretch", hide_index=True)
+            else:
+                st.caption("Raw input schema metadata is unavailable for this run.")
+
+            st.subheader("Model explanation")
+            if isinstance(explanation, dict) and explanation.get("available"):
+                st.caption(f"Method: {explanation.get('method', 'n/a')}")
+                explanation_rows = [
+                    row for row in explanation.get("features", []) if isinstance(row, dict)
+                ]
+                if explanation_rows:
+                    explanation_df = pd.DataFrame(explanation_rows).sort_values(
+                        "importance", ascending=False
+                    ).head(10)
+                    st.dataframe(explanation_df, width="stretch", hide_index=True)
+                    st.bar_chart(explanation_df.set_index("feature")["importance"])
+                else:
+                    st.caption("Explanation metadata did not include feature rows.")
+            else:
+                reason = explanation.get("reason") if isinstance(explanation, dict) else None
+                st.caption(f"Unavailable: {reason or 'model explanation metadata was not produced.'}")
 
             # === 2. Training Progress chart =================================
             if experiments:

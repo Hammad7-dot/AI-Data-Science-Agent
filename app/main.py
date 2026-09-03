@@ -17,7 +17,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.agent import run_agent, honest_summary_sentence  # noqa: E402
+from app.agent import (  # noqa: E402
+    run_agent,
+    honest_summary_sentence,
+    trust_artifact_paths,
+    validation_uncertainty_lines,
+)
 from app.reporting import (  # noqa: E402
     objective_lines,
     display_status,
@@ -162,6 +167,9 @@ def main(argv=None) -> int:
     print(f"Best score:      {best.get('score', 'n/a')}")
     if plan.get("task_type") in ("classification", "regression"):
         print("Score basis:     out-of-fold cross-validation (target status uses this score)")
+        print("Validation uncertainty:")
+        for detail in validation_uncertainty_lines(best):
+            print(f"  {detail}")
         holdout = result.get("holdout_evaluation")
         if holdout:
             print(f"Final holdout:   {holdout['metric']} = {holdout['score']:.4f} ({holdout['samples']} rows)")
@@ -170,6 +178,8 @@ def main(argv=None) -> int:
     print(f"Report path:     {result['report_path']}")
     if result.get("best_model_path"):
         print(f"Best model saved to: {result['best_model_path']}")
+    for label, path in trust_artifact_paths(result).items():
+        print(f"{label} artifact: {path}")
     if result["status"] not in ("success",):
         print("-" * 60)
         print(honest_summary_sentence(result))
