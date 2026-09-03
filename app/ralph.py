@@ -360,6 +360,7 @@ def run_ralph_loop(
         status = "optimized"
 
     best_model_path = None
+    best_model_promoted = False
     if best_experiment is not None and best_experiment.get("model_path"):
         try:
             os.makedirs(models_dir, exist_ok=True)
@@ -368,6 +369,7 @@ def run_ralph_loop(
             try:
                 shutil.copy2(best_experiment["model_path"], temporary_model)
                 os.replace(temporary_model, best_model_path)
+                best_model_promoted = True
             finally:
                 temporary_model.unlink(missing_ok=True)
         except OSError:
@@ -377,9 +379,9 @@ def run_ralph_loop(
         try:
             os.makedirs(models_dir, exist_ok=True)
             _write_best_model_artifacts(models_dir, best_experiment, plan)
-            if isinstance(best_experiment.get("model_schema"), dict):
+            if best_model_promoted and isinstance(best_experiment.get("model_schema"), dict):
                 _write_json(os.path.join(models_dir, "schema.json"), best_experiment["model_schema"])
-            if isinstance(best_experiment.get("explainability"), dict):
+            if best_model_promoted and isinstance(best_experiment.get("explainability"), dict):
                 _write_json(os.path.join(models_dir, "explainability.json"), best_experiment["explainability"])
         except OSError:
             pass

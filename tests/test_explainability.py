@@ -4,6 +4,7 @@ from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.pipeline import Pipeline
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import OneHotEncoder
 
 from tools.explainability import explain_model
@@ -51,4 +52,32 @@ def test_unsupported_model_explains_unavailability():
         "method": None,
         "features": [],
         "reason": "Model does not expose coefficients or feature importances.",
+    }
+
+
+def test_tree_explanation_uses_nonnegative_feature_importances():
+    """Catches tree imports omitting native importances or returning negative values."""
+    pipeline = _fitted_export(RandomForestClassifier(n_estimators=5, random_state=1)).model
+
+    explanation = explain_model(pipeline)
+
+    assert explanation["available"] is True
+    assert explanation["method"] == "feature_importance"
+    assert all(row["importance"] >= 0 for row in explanation["features"])
+    assert all("coefficient" not in row for row in explanation["features"])
+
+
+def test_mismatched_feature_names_and_values_is_unavailable():
+    """Catches malformed estimators pairing an importance with the wrong feature."""
+    exported_model = _fitted_export(LogisticRegression(max_iter=500))
+    estimator = exported_model.named_steps["model"]
+    estimator.coef_ = estimator.coef_[:, :-1]
+
+    explanation = explain_model(exported_model)
+
+    assert explanation == {
+        "available": False,
+        "method": None,
+        "features": [],
+        "reason": "Transformed feature names and importances differ in length.",
     }

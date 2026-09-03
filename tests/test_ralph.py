@@ -756,6 +756,38 @@ def test_run_ralph_loop_promotes_schema_and_explanation_artifacts(tmp_path):
     assert explanation["available"] is True
 
 
+def test_failed_model_promotion_preserves_existing_trust_artifacts(tmp_path, monkeypatch):
+    """Catches schema metadata describing a model that failed to promote."""
+    import app.ralph as ralph_module
+
+    run_dir = tmp_path / "run"
+    models_dir = run_dir / "models"
+    models_dir.mkdir(parents=True)
+    old_schema = {"schema_version": 1, "raw_columns": ["old"]}
+    old_explanation = {"available": False, "method": None, "features": [], "reason": "old"}
+    (models_dir / "schema.json").write_text(json.dumps(old_schema), encoding="utf-8")
+    (models_dir / "explainability.json").write_text(json.dumps(old_explanation), encoding="utf-8")
+
+    def fail_copy(source, destination):
+        raise OSError("promotion copy failed")
+
+    monkeypatch.setattr(ralph_module.shutil, "copy2", fail_copy)
+    result = run_ralph_loop(
+        dataset_path=DATASET_PATH,
+        objective="Predict churn",
+        target_score=0.999,
+        metric="f1",
+        max_iterations=1,
+        workdir=str(tmp_path / "generated"),
+        experiments_path=str(tmp_path / "experiments.json"),
+        run_dir=str(run_dir),
+    )
+
+    assert result["best_model_path"] is None
+    assert json.loads((models_dir / "schema.json").read_text(encoding="utf-8")) == old_schema
+    assert json.loads((models_dir / "explainability.json").read_text(encoding="utf-8")) == old_explanation
+
+
 def test_generated_code_reports_feature_info_for_basic_and_pipeline(tmp_path):
     """Generated code for both 'basic' and 'pipeline' feature_engineering
     variants must execute successfully and report n_features/train_samples/
