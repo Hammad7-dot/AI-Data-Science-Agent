@@ -30,6 +30,7 @@ def _trust_result(best_model_path=None, *, model_schema=None, explainability=Non
         },
         "model_schema": model_schema,
         "explainability": explainability,
+        "holdout_evaluation": {"metric": "f1", "score": 0.88, "samples": 12},
         "all_experiments": [],
         "plan": {
             "task_type": "classification",
@@ -75,7 +76,12 @@ def test_streamlit_renders_validation_schema_and_explanation_from_result(monkeyp
 
     at = _run_with_result(monkeypatch, _trust_result(model_schema=schema, explainability=explanation))
 
-    assert {metric.label for metric in at.metric} >= {"CV mean", "CV std", "95% interval"}
+    assert {metric.label for metric in at.metric} >= {
+        "CV mean",
+        "CV std",
+        "95% descriptive interval",
+        "Final holdout f1",
+    }
     assert {heading.value for heading in at.subheader} >= {"Raw input schema", "Model explanation"}
     assert any(list(frame.value["column"]) == ["age", "city"] for frame in at.dataframe)
     assert any(
