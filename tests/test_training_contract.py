@@ -13,7 +13,7 @@ from sklearn.model_selection import train_test_split
 from app.coder import generate_code
 
 
-def train(tmp_path, frame, mode, task="regression"):
+def train(tmp_path, frame, mode, task="regression", dropped=None):
     path = tmp_path / "data.csv"
     frame.to_csv(path, index=False)
     model_name = "random_forest" if task == "classification" else "random_forest_regressor"
@@ -22,6 +22,7 @@ def train(tmp_path, frame, mode, task="regression"):
         "metric": "f1" if task == "classification" else "r2",
         "candidate_models": [model_name],
         "medium_cardinality_columns": ["city"],
+        "dropped_high_cardinality_columns": dropped or [],
     }
     code = generate_code(str(path), plan, 1, model_name=model_name,
                          feature_engineering=mode, hyperparams={"n_estimators": 5},
@@ -55,6 +56,31 @@ def test_export_predicts_raw_missing_and_unseen_categories(tmp_path, mode):
     model, _ = train(tmp_path, frame, mode)
     unseen = pd.DataFrame({"age": [np.nan, 25.0], "city": ["NEW", None]})
     assert np.isfinite(model.predict(unseen)).all()
+
+
+def test_holdout_evaluation_excludes_features_dropped_during_training(tmp_path):
+    """Catches raw dropped columns reaching a validated export at holdout time."""
+    frame = pd.DataFrame({
+        "age": np.arange(60, dtype=float),
+        "city": ["A", "B", "C"] * 20,
+        "opaque_id": [f"id_{index}" for index in range(60)],
+        "target": np.arange(60) * 2.0,
+    })
+    _, result = train(tmp_path, frame, "basic", dropped=["opaque_id"])
+
+    from tools.validation import evaluate_holdout
+    holdout = evaluate_holdout(
+        result["model_path"], str(tmp_path / "data.csv"), {
+            "target": "target",
+            "task_type": "regression",
+            "metric": "r2",
+            "dropped_high_cardinality_columns": ["opaque_id"],
+            "leakage_dropped_columns": [],
+        },
+    )
+
+    assert holdout["samples"] == 12
+    assert np.isfinite(holdout["score"])
 
 
 @pytest.mark.parametrize("mode", ["basic", "pipeline", "safe_categorical"])

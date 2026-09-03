@@ -46,8 +46,14 @@ def validation_folds(y, task_type):
 def evaluate_holdout(model_path, dataset_path, plan):
     """Evaluate only the selected model, after search; never feed this score back."""
     frame = pd.read_csv(dataset_path).dropna(subset=[plan["target"]])
+    X = frame.drop(columns=plan["target"])
+    excluded_columns = (
+        (plan.get("dropped_high_cardinality_columns") or [])
+        + (plan.get("leakage_dropped_columns") or [])
+    )
+    X = X.drop(columns=[column for column in excluded_columns if column in X.columns])
     _, X_holdout, _, y_holdout = split_development_holdout(
-        frame.drop(columns=plan["target"]), frame[plan["target"]], plan["task_type"])
+        X, frame[plan["target"]], plan["task_type"])
     predictions = joblib.load(model_path).predict(X_holdout)
     if plan["task_type"] == "classification":
         metrics = {"accuracy": accuracy_score(y_holdout, predictions),
