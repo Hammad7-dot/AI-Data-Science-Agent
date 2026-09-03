@@ -33,6 +33,7 @@ from app.reporting import (  # noqa: E402
     diminishing_return_note,
 )
 from app.evaluator import LOWER_IS_BETTER  # noqa: E402
+from app.run_scope import store_upload
 
 COEF_MODELS = {"linear_regression", "ridge", "logistic_regression"}
 IMPORTANCE_MODELS = {
@@ -84,6 +85,7 @@ with st.sidebar:
             "to set your own target score."
         )
     max_iterations = st.number_input("Max iterations", min_value=1, max_value=10, value=10, step=1)
+    use_docker = st.checkbox("Run code in Docker sandbox", value=False)
     reset_history = st.checkbox(
         "Start fresh (clear prior experiment history for this objective)",
         value=False,
@@ -187,12 +189,7 @@ def _render_model_parameters(best: dict, model_path: str, feature_info_json: dic
 
 
 def _save_uploaded_file(uploaded) -> str:
-    datasets_dir = PROJECT_ROOT / "workspace" / "datasets"
-    datasets_dir.mkdir(parents=True, exist_ok=True)
-    dest = datasets_dir / uploaded.name
-    with open(dest, "wb") as f:
-        f.write(uploaded.getbuffer())
-    return str(dest)
+    return store_upload(PROJECT_ROOT / "workspace", uploaded.name, uploaded.getbuffer())
 
 
 if run_clicked:
@@ -216,12 +213,23 @@ if run_clicked:
                     max_iterations=int(max_iterations),
                     workspace_dir=str(PROJECT_ROOT / "workspace"),
                     stop_mode=stop_mode,
+                    use_docker=use_docker,
                     reset=reset_history,
                     target_column=None if target_column_choice == "(auto-detect)" else target_column_choice,
                 )
                 status_box.update(label="Run complete", state="complete")
 
             plan = result.get("plan") or {}
+            if result.get("status") == "sandbox_unavailable":
+                st.error(result["all_experiments"][-1]["reason"])
+            if plan.get("task_type") in ("classification", "regression"):
+                st.caption("Search scores and target status use out-of-fold cross-validation on development data.")
+                holdout = result.get("holdout_evaluation")
+                if holdout:
+                    st.metric(f"Final holdout {holdout['metric']}", f"{holdout['score']:.4f}")
+                    st.caption(f"Evaluated on {holdout['samples']} held-out rows after model selection; not used to choose the winner.")
+                elif result.get("holdout_error"):
+                    st.warning(f"Final holdout evaluation unavailable: {result['holdout_error']}")
             obj_lines = objective_lines(plan)
             with st.container(border=True):
                 st.markdown("  \n".join([f"**{obj_lines[0]}**"] + obj_lines[1:]))
@@ -378,7 +386,10 @@ if run_clicked:
             # === 5. Model Parameters (model-specific) =======================
             if best and result.get("best_model_path") and os.path.exists(result["best_model_path"]):
                 st.subheader("🔬 Model Parameters")
-                _render_model_parameters(best, result["best_model_path"], feature_info_json)
+                if result.get("sandbox_requested"):
+                    st.caption("Sandbox model files are not deserialized by the UI. Use the downloaded metadata or inspect the model inside Docker.")
+                else:
+                    _render_model_parameters(best, result["best_model_path"], feature_info_json)
 
             # === 6. Generated code viewer ====================================
             iterations_run = result.get("iterations_run") or 0
@@ -386,7 +397,7 @@ if run_clicked:
                 st.subheader("🧠 Generated Code")
                 new_records = experiments[-iterations_run:]
                 for local_idx, exp in enumerate(new_records, start=1):
-                    code_path = Path(os.path.join(str(PROJECT_ROOT / "workspace" / "generated"), f"iteration_{local_idx}.py"))
+                    code_path = Path(exp.get("code_path") or os.path.join(result["generated_dir"], f"iteration_{local_idx}.py"))
                     with st.expander(f"View Generated Code -- Iteration {exp.get('iteration')} ({exp.get('model')})"):
                         if code_path.exists():
                             st.code(code_path.read_text(encoding="utf-8"), language="python")
@@ -448,7 +459,7 @@ if run_clicked:
                 st.warning(f"⚠️ MAX ITERATIONS REACHED -- {honest_summary_sentence(result)}")
 
             report_path = result.get("report_path")
-            experiments_path = result.get("experiments_path")
+            experiments_path = result.get("run_experiments_path")
             best_model_path = result.get("best_model_path")
 
             dl_cols = st.columns(3)

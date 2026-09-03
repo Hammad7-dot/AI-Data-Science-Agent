@@ -128,9 +128,9 @@ def create_plan(
         steps = [
             f"Load dataset from CSV and identify target column '{target_name}'",
             "Drop target from feature matrix X",
-            "One-hot encode categorical features",
-            "Fill missing numeric values with column median",
-            "Split into train/test sets (80/20, random_state=42)",
+            "Reserve a final 20% holdout (random_state=42; stratified for classification)",
+            "Fit encoding, imputation and feature selection inside each cross-validation fold",
+            "Select models using out-of-fold predictions from up to three development folds",
             f"Train a {candidate_models[0]} classifier as the first candidate",
             "Evaluate with accuracy, precision, recall, and f1 (weighted average)",
         ]
@@ -139,9 +139,9 @@ def create_plan(
         steps = [
             f"Load dataset from CSV and identify target column '{target_name}'",
             "Drop target from feature matrix X",
-            "One-hot encode categorical features",
-            "Fill missing numeric values with column median",
-            "Split into train/test sets (80/20, random_state=42)",
+            "Reserve a final 20% holdout (random_state=42; stratified for classification)",
+            "Fit encoding, imputation and feature selection inside each cross-validation fold",
+            "Select models using out-of-fold predictions from up to three development folds",
             f"Train a {candidate_models[0]} regressor as the first candidate",
             "Evaluate with rmse, mae, and r2",
         ]

@@ -81,10 +81,10 @@ def _generate_supervised_code(
     if task_type == "classification":
         default_metric = "f1"
         metrics_block = '''
-accuracy = accuracy_score(y_test, preds)
-precision = precision_score(y_test, preds, average="weighted", zero_division=0)
-recall = recall_score(y_test, preds, average="weighted", zero_division=0)
-f1 = f1_score(y_test, preds, average="weighted", zero_division=0)
+accuracy = accuracy_score(y_validation, preds)
+precision = precision_score(y_validation, preds, average="weighted", zero_division=0)
+recall = recall_score(y_validation, preds, average="weighted", zero_division=0)
+f1 = f1_score(y_validation, preds, average="weighted", zero_division=0)
 
 metric_values = {
     "accuracy": accuracy,
@@ -113,6 +113,8 @@ result = {
     "train_samples": TRAIN_SAMPLES,
     "test_samples": TEST_SAMPLES,
     "feature_names": FEATURE_NAMES,
+    "validation_method": "out_of_fold",
+    "cv_folds": cv.n_splits,
 }
 print(json.dumps(result))
 '''
@@ -120,10 +122,10 @@ print(json.dumps(result))
     else:
         default_metric = "rmse"
         metrics_block = '''
-mse = mean_squared_error(y_test, preds)
+mse = mean_squared_error(y_validation, preds)
 rmse = mse ** 0.5
-mae = mean_absolute_error(y_test, preds)
-r2 = r2_score(y_test, preds)
+mae = mean_absolute_error(y_validation, preds)
+r2 = r2_score(y_validation, preds)
 
 metric_values = {
     "rmse": rmse,
@@ -150,13 +152,15 @@ result = {
     "train_samples": TRAIN_SAMPLES,
     "test_samples": TEST_SAMPLES,
     "feature_names": FEATURE_NAMES,
+    "validation_method": "out_of_fold",
+    "cv_folds": cv.n_splits,
 }
 print(json.dumps(result))
 '''
         sklearn_metrics_import = "from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score"
 
     model_save_block = '''
-MODELS_DIR = ''' + repr(models_dir) + '''
+MODELS_DIR = os.environ.get("AGENT_MODELS_DIR", ''' + repr(models_dir) + ''')
 if MODELS_DIR:
     Path(MODELS_DIR).mkdir(parents=True, exist_ok=True)
     MODEL_PATH = str(Path(MODELS_DIR) / f"iteration_{ITERATION}_{MODEL_NAME}.joblib")
@@ -165,125 +169,55 @@ else:
     MODEL_PATH = None
 '''
 
-    sample_info_block = '''
-FEATURE_NAMES = list(X.columns)
-N_FEATURES = len(FEATURE_NAMES)
-TRAIN_SAMPLES = int(X_train.shape[0])
-TEST_SAMPLES = int(X_test.shape[0])
-'''
-
     dropped_cols = plan.get("dropped_high_cardinality_columns") or []
-    # Columns the profiler name-heuristically flagged as likely target
-    # leakage (app/planner.py's leakage_dropped_columns) -- dropped here,
-    # unconditionally, for every feature_engineering mode, the same way
-    # high-cardinality columns already are. A profiler that warns "possible
-    # leakage" but a generated script that still trains on the flagged
-    # column would be a contradiction, not a warning.
     leakage_cols = plan.get("leakage_dropped_columns") or []
-    drop_block = f'''
+    medium_card_cols = plan.get("medium_cardinality_columns") or []
+    feature_block = f'''
 DROPPED_HIGH_CARDINALITY_COLUMNS = {dropped_cols!r}
 DROPPED_LEAKAGE_COLUMNS = {leakage_cols!r}
-X = X.drop(columns=[c for c in DROPPED_HIGH_CARDINALITY_COLUMNS + DROPPED_LEAKAGE_COLUMNS if c in X.columns])
-'''
-
-    low_card_cols = plan.get("low_cardinality_columns") or []
-    medium_card_cols = plan.get("medium_cardinality_columns") or []
-
-    if feature_engineering == "safe_categorical":
-        feature_block = drop_block + f'''
-LOW_CARDINALITY_COLUMNS = {low_card_cols!r}
 MEDIUM_CARDINALITY_COLUMNS = {medium_card_cols!r}
+X = X.drop(columns=[c for c in DROPPED_HIGH_CARDINALITY_COLUMNS + DROPPED_LEAKAGE_COLUMNS if c in X.columns])
 
-for col in MEDIUM_CARDINALITY_COLUMNS:
-    if col in X.columns:
-        X[col] = X[col].map(X[col].value_counts()).fillna(0)
-
-low_card_present = [c for c in LOW_CARDINALITY_COLUMNS if c in X.columns]
-X = pd.get_dummies(X, columns=low_card_present, drop_first=True)
-if X.shape[1] > MAX_ONEHOT_COLUMNS:
-    raise RuntimeError(
-        f"one-hot encoding produced {{X.shape[1]}} columns from {{X.shape[0]}} rows, "
-        f"exceeding the safety cap of {{MAX_ONEHOT_COLUMNS}}; likely a high-cardinality "
-        "column was not dropped"
-    )
-numeric_cols = X.select_dtypes(include="number").columns
-X[numeric_cols] = X[numeric_cols].fillna(X[numeric_cols].median())
-
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, random_state=42
-)
-''' + sample_info_block + '''
-model = get_model(MODEL_NAME, TASK_TYPE, HYPERPARAMS)
-model.fit(X_train, y_train)
-preds = model.predict(X_test)
-''' + model_save_block
-    elif feature_engineering == "basic":
-        feature_block = drop_block + '''
-X = pd.get_dummies(X, drop_first=True)
-if X.shape[1] > MAX_ONEHOT_COLUMNS:
-    raise RuntimeError(
-        f"one-hot encoding produced {X.shape[1]} columns from {X.shape[0]} rows, "
-        f"exceeding the safety cap of {MAX_ONEHOT_COLUMNS}; likely a high-cardinality "
-        "column was not dropped"
-    )
-numeric_cols = X.select_dtypes(include="number").columns
-X[numeric_cols] = X[numeric_cols].fillna(X[numeric_cols].median())
-
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, random_state=42
-)
-''' + sample_info_block + '''
-model = get_model(MODEL_NAME, TASK_TYPE, HYPERPARAMS)
-model.fit(X_train, y_train)
-preds = model.predict(X_test)
-''' + model_save_block
-    else:
-        feature_block = drop_block + '''
-numeric_cols = X.select_dtypes(include="number").columns.tolist()
-categorical_cols = X.select_dtypes(exclude="number").columns.tolist()
-
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, random_state=42
-)
-''' + sample_info_block + '''
-n_features = len(numeric_cols) + len(categorical_cols)
-k = min(10, n_features) if n_features > 10 else None
-
+# Reserve the final holdout before fitting any preprocessing or model.
+X_train, X_holdout, y_train, y_holdout = split_development_holdout(X, y, TASK_TYPE)
+numeric_cols = X_train.select_dtypes(include="number").columns.tolist()
+categorical_cols = X_train.select_dtypes(exclude="number").columns.tolist()
+frequency_cols = [c for c in categorical_cols if c in MEDIUM_CARDINALITY_COLUMNS] if FEATURE_ENGINEERING == "safe_categorical" else []
+categorical_cols = [c for c in categorical_cols if c not in frequency_cols]
+k = min(10, X_train.shape[1]) if FEATURE_ENGINEERING == "pipeline" and X_train.shape[1] > 10 else None
 preprocessor = build_preprocessing_pipeline(
-    numeric_cols, categorical_cols, scale_numeric=True, feature_selection_k=k
+    numeric_cols, categorical_cols, scale_numeric=FEATURE_ENGINEERING == "pipeline",
+    feature_selection_k=k, task_type=TASK_TYPE, frequency_cols=frequency_cols,
 )
-_ohe_check = preprocessor.fit_transform(X_train)
-_ohe_ncols = _ohe_check.shape[1]
-if _ohe_ncols > MAX_ONEHOT_COLUMNS:
-    raise RuntimeError(
-        f"one-hot encoding produced {_ohe_ncols} columns from {X_train.shape[0]} rows, "
-        f"exceeding the safety cap of {MAX_ONEHOT_COLUMNS}; likely a high-cardinality "
-        "column was not dropped"
-    )
-model_step = get_model(MODEL_NAME, TASK_TYPE, HYPERPARAMS)
-model = Pipeline([("preprocess", preprocessor), ("model", model_step)])
+model = Pipeline([("preprocess", preprocessor), ("model", get_model(MODEL_NAME, TASK_TYPE, HYPERPARAMS))])
+cv = validation_folds(y_train, TASK_TYPE)
+# cross_val_predict clones the entire pipeline: encoders, imputation and
+# supervised feature selection see only each fold's training partition.
+preds = cross_val_predict(model, X_train, y_train, cv=cv)
+y_validation = y_train
 model.fit(X_train, y_train)
-preds = model.predict(X_test)
+FEATURE_NAMES = model.named_steps["preprocess"].get_feature_names_out().tolist()
+N_FEATURES = len(FEATURE_NAMES)
+TRAIN_SAMPLES = len(X_train)
+TEST_SAMPLES = len(X_holdout)
 ''' + model_save_block
-
-    if feature_engineering == "pipeline":
-        ml_import = "from sklearn.pipeline import Pipeline\nfrom tools.ml import get_model, build_preprocessing_pipeline"
-    else:
-        ml_import = "from tools.ml import get_model"
+    ml_import = "from sklearn.pipeline import Pipeline\nfrom tools.ml import get_model, build_preprocessing_pipeline"
 
     code = f'''{header}import json
+import os
 import sys
 import joblib
 import pandas as pd
 from pathlib import Path
 
-sys.path.insert(0, {project_root_repr})
+sys.path.insert(0, os.environ.get("AGENT_PROJECT_ROOT", {project_root_repr}))
 
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import cross_val_predict
+from tools.validation import split_development_holdout, validation_folds
 {sklearn_metrics_import}
 {ml_import}
 
-DATASET_PATH = {dataset_path!r}
+DATASET_PATH = os.environ.get("AGENT_DATASET_PATH", {dataset_path!r})
 TARGET = {target!r}
 MODEL_NAME = {model_name!r}
 TASK_TYPE = {task_type!r}
@@ -305,9 +239,10 @@ X = df.drop(columns=[TARGET])
 def _generate_eda_code(dataset_path: str, plan: dict, iteration: int, previous_feedback: str | None) -> str:
     header = _feedback_comment(iteration, previous_feedback)
     code = f'''{header}import json
+import os
 import pandas as pd
 
-DATASET_PATH = {dataset_path!r}
+DATASET_PATH = os.environ.get("AGENT_DATASET_PATH", {dataset_path!r})
 
 df = pd.read_csv(DATASET_PATH)
 

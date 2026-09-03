@@ -17,8 +17,10 @@ without touching callers of `run_script`.
 from __future__ import annotations
 
 import subprocess
+import os
 import sys
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -33,6 +35,21 @@ class ExecutionResult:
     artifacts: list[str] = field(default_factory=list)
     timed_out: bool = False
     sandboxed: bool = False
+
+
+def _write_script(work, filename, code):
+    if Path(filename.replace("\\", "/")).name != filename or filename in ("", ".", ".."):
+        raise ValueError("Script filename must be a plain filename")
+    script = work / filename
+    temporary = work / (uuid.uuid4().hex + ".tmp")
+    try:
+        with temporary.open("x", encoding="utf-8") as stream:
+            stream.write(code)
+        # Replacing the directory entry avoids following planted output links.
+        os.replace(temporary, script)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return script
 
 
 def run_script(
@@ -50,8 +67,7 @@ def run_script(
     """
     work = Path(workdir).resolve()
     work.mkdir(parents=True, exist_ok=True)
-    script_path = work / filename
-    script_path.write_text(code, encoding="utf-8")
+    script_path = _write_script(work, filename, code)
 
     before = {p.name for p in work.iterdir()}
 
@@ -68,8 +84,8 @@ def run_script(
         stdout, stderr, exit_code = proc.stdout, proc.stderr, proc.returncode
     except subprocess.TimeoutExpired as e:
         timed_out = True
-        stdout = e.stdout or ""
-        stderr = (e.stderr or "") + f"\n[python_runner] execution timed out after {timeout}s"
+        stdout = _as_text(e.stdout)
+        stderr = _as_text(e.stderr) + f"\n[python_runner] execution timed out after {timeout}s"
         exit_code = -1
     duration = time.time() - start
 
@@ -88,6 +104,10 @@ def run_script(
     )
 
 
+def _as_text(value):
+    return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else (value or "")
+
+
 def run_script_in_docker(
     code: str,
     workdir: str,
@@ -96,91 +116,75 @@ def run_script_in_docker(
     image: str = "ai-ds-agent-sandbox:latest",
     memory_limit: str = "512m",
     cpus: str = "1.0",
+    dataset_path: str | None = None,
+    models_dir: str | None = None,
 ) -> ExecutionResult:
-    """Write `code` to `workdir/filename` and execute it inside a
-    throwaway Docker container built from docker/sandbox.Dockerfile,
-    with no network access and bounded CPU/memory.
-
-    Falls back to the plain subprocess `run_script` (with
-    `sandboxed=False`) if the `docker` binary is missing or the
-    container fails to even start (docker daemon not running, image
-    not built, etc.) -- this keeps the rest of the pipeline runnable in
-    dev/CI environments without Docker installed.
-    """
+    """Run only in Docker. Infrastructure failures never execute code on the host."""
     work = Path(workdir).resolve()
     work.mkdir(parents=True, exist_ok=True)
-    script_path = work / filename
-    script_path.write_text(code, encoding="utf-8")
+    script_path = _write_script(work, filename, code)
 
-    # Pre-flight: confirm the docker binary exists AND a daemon is
-    # actually reachable. `docker run` itself would also fail in these
-    # cases, but with a docker-CLI error (nonzero exit, no exception) --
-    # not something we can distinguish from the script's own nonzero
-    # exit after the fact. Checking up front lets us cleanly fall back
-    # to plain subprocess execution instead of misreporting a docker
-    # infrastructure failure as sandboxed=True.
+    def unavailable(reason):
+        return ExecutionResult(False, "", f"Docker sandbox unavailable: {reason}", 125, 0)
+
     try:
-        preflight = subprocess.run(
-            ["docker", "info"], capture_output=True, text=True, timeout=10
-        )
-        if preflight.returncode != 0:
-            return run_script(code, workdir, filename=filename, timeout=timeout)
-    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
-        return run_script(code, workdir, filename=filename, timeout=timeout)
+        preflight = subprocess.run(["docker", "info"], capture_output=True, text=True, timeout=10)
+        if preflight.returncode:
+            return unavailable(preflight.stderr or "daemon not reachable")
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return unavailable(str(exc))
+
+    name = "ai-ds-" + uuid.uuid4().hex
+    tools_dir = Path(__file__).resolve().parent
+    docker_cmd = [
+        "docker", "run", "--rm", "--name", name,
+        "--network", "none", "--memory", memory_limit, "--cpus", cpus,
+        "--pids-limit", "128", "--cap-drop", "ALL",
+        "--security-opt", "no-new-privileges", "--read-only",
+        "--tmpfs", "/tmp:rw,nosuid,size=64m",
+        "-v", f"{work}:/workspace",
+        "-v", f"{script_path}:/workspace/{filename}:ro",
+        "-v", f"{tools_dir}:/opt/agent/tools:ro",
+        "-e", "AGENT_PROJECT_ROOT=/opt/agent",
+        "-e", "PYTHONDONTWRITEBYTECODE=1",
+        "-e", "OPENBLAS_NUM_THREADS=1", "-e", "OMP_NUM_THREADS=1",
+        "-w", "/workspace",
+    ]
+    if dataset_path:
+        dataset = Path(dataset_path).resolve(strict=True)
+        docker_cmd += ["-v", f"{dataset}:/input/dataset.csv:ro",
+                       "-e", "AGENT_DATASET_PATH=/input/dataset.csv"]
+    if models_dir:
+        models = Path(models_dir).resolve()
+        models.mkdir(parents=True, exist_ok=True)
+        docker_cmd += ["-v", f"{models}:/models", "-e", "AGENT_MODELS_DIR=/models"]
+    docker_cmd += [image, "python", filename]
 
     before = {p.name for p in work.iterdir()}
-
-    docker_cmd = [
-        "docker",
-        "run",
-        "--rm",
-        "--network",
-        "none",
-        "--memory",
-        memory_limit,
-        "--cpus",
-        cpus,
-        "-v",
-        f"{work}:/workspace",
-        "-w",
-        "/workspace",
-        image,
-        "python",
-        filename,
-    ]
-
-    start = time.time()
+    start = time.monotonic()
     timed_out = False
     try:
-        proc = subprocess.run(
-            docker_cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
+        proc = subprocess.run(docker_cmd, capture_output=True, text=True, timeout=timeout)
         stdout, stderr, exit_code = proc.stdout, proc.stderr, proc.returncode
-    except subprocess.TimeoutExpired as e:
+        if exit_code in (125, 126, 127):
+            return unavailable(stderr or f"container could not start (exit {exit_code})")
+    except subprocess.TimeoutExpired as exc:
         timed_out = True
-        stdout = e.stdout or ""
-        stderr = (e.stderr or "") + f"\n[python_runner] docker execution timed out after {timeout}s"
+        stdout = _as_text(exc.stdout)
+        stderr = _as_text(exc.stderr) + f"\nDocker sandbox timed out after {timeout}s"
         exit_code = -1
-    except (FileNotFoundError, OSError):
-        # `docker` binary missing, or the run otherwise failed to start
-        # (e.g. daemon not running). Fall back to plain subprocess
-        # execution -- not isolated, so sandboxed stays False.
-        return run_script(code, workdir, filename=filename, timeout=timeout)
-    duration = time.time() - start
-
-    after = {p.name for p in work.iterdir()}
-    new_files = sorted(after - before - {filename})
-
+        # Killing the Docker CLI alone does not stop the container.
+        try:
+            cleanup = subprocess.run(["docker", "rm", "-f", name], capture_output=True, text=True, timeout=10)
+            if cleanup.returncode:
+                stderr += f"\nContainer cleanup failed: {cleanup.stderr}"
+        except (OSError, subprocess.TimeoutExpired) as cleanup_error:
+            stderr += f"\nContainer cleanup failed: {cleanup_error}"
+    except OSError as exc:
+        return unavailable(str(exc))
+    artifacts = [str(p) for p in work.iterdir() if p.name not in before]
     return ExecutionResult(
-        success=(exit_code == 0 and not timed_out),
-        stdout=stdout,
-        stderr=stderr,
-        exit_code=exit_code,
-        duration_seconds=round(duration, 3),
-        artifacts=[str(work / f) for f in new_files],
-        timed_out=timed_out,
-        sandboxed=True,
+        success=exit_code == 0 and not timed_out, stdout=stdout, stderr=stderr,
+        exit_code=exit_code, duration_seconds=round(time.monotonic() - start, 3),
+        artifacts=artifacts, timed_out=timed_out, sandboxed=True,
     )

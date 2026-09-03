@@ -24,6 +24,10 @@ from __future__ import annotations
 
 import itertools
 
+import numpy as np
+import pandas as pd
+from sklearn.base import BaseEstimator, TransformerMixin
+
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import (
     GradientBoostingClassifier,
@@ -37,6 +41,42 @@ from sklearn.neighbors import KNeighborsClassifier, KNeighborsRegressor
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.svm import SVC
+
+from tools.dataset import MAX_ONEHOT_COLUMNS
+
+
+class FrequencyEncoder(TransformerMixin, BaseEstimator):
+    """Learn category frequencies on fit data; unseen/missing values map to zero."""
+
+    def fit(self, X, y=None):
+        self.feature_names_in_ = np.asarray(X.columns, dtype=object)
+        self.frequencies_ = {col: X[col].value_counts(normalize=True) for col in X.columns}
+        return self
+
+    def transform(self, X):
+        return pd.DataFrame({col: X[col].map(self.frequencies_[col]).fillna(0)
+                             for col in self.feature_names_in_}, index=X.index).to_numpy()
+
+    def get_feature_names_out(self, input_features=None):
+        return self.feature_names_in_
+
+
+class FeatureCountGuard(TransformerMixin, BaseEstimator):
+    """Check sparse encoded width before selection or estimator fitting."""
+
+    def fit(self, X, y=None):
+        self.n_features_in_ = X.shape[1]
+        self.transform(X)
+        return self
+
+    def transform(self, X):
+        if X.shape[1] > MAX_ONEHOT_COLUMNS:
+            raise RuntimeError(f"one-hot encoding produced {X.shape[1]} columns, "
+                               f"exceeding the safety cap of {MAX_ONEHOT_COLUMNS}")
+        return X
+
+    def get_feature_names_out(self, input_features=None):
+        return np.asarray(input_features, dtype=object)
 
 CLASSIFICATION_MODELS = [
     "logistic_regression",
@@ -122,6 +162,8 @@ def build_preprocessing_pipeline(
     categorical_cols,
     scale_numeric: bool = True,
     feature_selection_k: int | None = None,
+    task_type: str = "classification",
+    frequency_cols=None,
 ):
     """Return a ColumnTransformer usable as the first step of a full
     sklearn Pipeline whose final step is a model.
@@ -143,29 +185,28 @@ def build_preprocessing_pipeline(
         transformers.append(("num", numeric_pipeline, list(numeric_cols)))
     if categorical_cols:
         transformers.append(("cat", categorical_pipeline, list(categorical_cols)))
+    if frequency_cols:
+        transformers.append(("freq", FrequencyEncoder(), list(frequency_cols)))
 
     preprocessor = ColumnTransformer(transformers=transformers, remainder="drop")
 
+    steps = [("preprocess", preprocessor), ("guard", FeatureCountGuard())]
     if feature_selection_k:
-        return Pipeline(
-            [
-                ("preprocess", preprocessor),
-                ("select", SelectKBest(k=feature_selection_k)),
-            ]
-        )
-    return Pipeline([("preprocess", preprocessor)])
+        score_func = f_regression if task_type == "regression" else f_classif
+        steps.append(("select", SelectKBest(score_func=score_func, k=feature_selection_k)))
+    return Pipeline(steps)
 
 
 def _median_imputer():
     from sklearn.impute import SimpleImputer
 
-    return SimpleImputer(strategy="median")
+    return SimpleImputer(strategy="median", keep_empty_features=True)
 
 
 def _most_frequent_imputer():
     from sklearn.impute import SimpleImputer
 
-    return SimpleImputer(strategy="most_frequent")
+    return SimpleImputer(strategy="most_frequent", keep_empty_features=True)
 
 
 def hyperparameter_grid(model_name: str) -> dict:

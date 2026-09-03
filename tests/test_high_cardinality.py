@@ -53,7 +53,7 @@ def test_generated_code_has_onehot_safety_cap():
     code = generate_code("dummy.csv", plan, iteration=1, model_name="linear_regression",
                           feature_engineering="basic", hyperparams={})
     assert f"MAX_ONEHOT_COLUMNS = {MAX_ONEHOT_COLUMNS}" in code
-    assert "RuntimeError" in code
+    assert "build_preprocessing_pipeline" in code
     assert "DROPPED_HIGH_CARDINALITY_COLUMNS = ['Game']" in code
 
 
@@ -150,9 +150,9 @@ def test_generated_code_safe_categorical_has_frequency_encoding():
     }
     code = generate_code("dummy.csv", plan, iteration=1, model_name="linear_regression",
                           feature_engineering="safe_categorical", hyperparams={})
-    assert "value_counts()" in code
+    assert 'frequency_cols=frequency_cols' in code
     assert "MEDIUM_CARDINALITY_COLUMNS = ['med_card']" in code
-    assert "LOW_CARDINALITY_COLUMNS = ['low_card']" in code
+
     assert f"MAX_ONEHOT_COLUMNS = {MAX_ONEHOT_COLUMNS}" in code
 
 

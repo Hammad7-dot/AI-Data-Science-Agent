@@ -18,19 +18,15 @@ def _docker_daemon_available() -> bool:
         return False
 
 
-def test_run_script_in_docker_falls_back_without_docker(tmp_path):
-    """This environment likely doesn't have a usable Docker daemon
-    (the `docker` CLI may be present but with no daemon running) --
-    exercise the graceful-fallback path and confirm it still returns a
-    valid ExecutionResult with sandboxed=False rather than crashing.
-    """
+def test_run_script_in_docker_fails_closed_without_docker(tmp_path):
+    """A missing daemon must fail explicitly without executing on the host."""
     if _docker_daemon_available():
         import pytest
 
-        pytest.skip("a working docker daemon is available in this environment; fallback path not exercised")
+        pytest.skip("a working docker daemon is available in this environment; missing-daemon path not exercised")
 
     result = run_script_in_docker("print(1)", str(tmp_path))
 
-    assert result.success is True
+    assert result.success is False
     assert result.sandboxed is False
-    assert "1" in result.stdout
+    assert "Docker sandbox unavailable" in result.stderr

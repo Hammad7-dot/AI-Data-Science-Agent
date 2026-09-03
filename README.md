@@ -2,9 +2,40 @@
 
 An agent that takes a CSV dataset and a natural-language objective, and
 produces an analysis plan, generates Python code, executes it,
-evaluates the results, and loops ("Ralph Loop") improving the code
+evaluates cross-validation results, and loops ("Ralph Loop") improving the code
 until a target metric is reached or a max iteration count is hit --
-then writes a Markdown report.
+then evaluates the selected model on a held-out partition and writes a Markdown report.
+
+## Validation and exported models
+
+Supervised runs reserve 20% of labeled rows for a final holdout before training.
+Classification splits are stratified. The remaining 80% is development data:
+its profile drives encoding choices and automatic regression targets, and up to
+three shuffled folds produce out-of-fold predictions for model selection.
+Every fold fits its own imputation, encoding, scaling, and feature selection.
+The target status refers to the cross-validation score, not the final holdout.
+At least 10 labeled rows are required; classification also needs enough examples
+per class for the stratified holdout and at least two development folds.
+
+After search, `run_agent()` evaluates the selected model once on the holdout.
+The CLI, UI, and report show this score separately; `reports/holdout.json` saves
+it as an artifact. It never enters experiment memory or influences the search.
+The saved model remains fitted on development data, preserving this evaluation.
+
+All encoding modes export a fitted sklearn Pipeline that accepts raw feature
+columns, handles missing values and unseen categories, and includes any feature
+selection. `basic` uses imputation and one-hot encoding, `pipeline` additionally
+scales numeric features and selects up to ten features when appropriate, and
+`safe_categorical` learns frequency mappings for medium-cardinality columns.
+Regression feature selection uses `f_regression`; classification uses `f_classif`.
+Feature names in model metadata describe the actual transformed/selected inputs.
+Load models from the project environment so the custom transformers in `tools.ml`
+are importable, and supply a DataFrame with the original feature column names.
+
+Validation has a new storage version, so default runs leave previous histories
+untouched and start a separate scope. If you explicitly override `experiments_path`
+with a legacy log, choose a new path or use `--reset` to discard its old scores.
+Previously exported bare estimators need to be retrained to gain preprocessing.
 
 ## Pipeline
 
@@ -32,7 +63,7 @@ CSV -> Planner -> Coder -> Executor -> Evaluator -> Ralph Loop -> Report
    `max_iterations` is reached.
 8. **Agent** (`app/agent.py`) orchestrates the whole run and writes a
    Markdown report (including Analyst notes) to
-   `workspace/reports/report.md`.
+   `workspace/runs/<run-id>/reports/report.md`.
 
 ## `tools/ml.py` -- ML experimentation expansion
 
@@ -55,7 +86,7 @@ both `app/planner.py` (`list_models_for_task`) and `app/coder.py`
   per Ralph iteration.
 
 Each Ralph iteration's generated script uses either "basic" feature
-engineering (one-hot + median-fill, the original behavior) or
+engineering (training-only one-hot encoding and median imputation) or
 "pipeline" (`build_preprocessing_pipeline` with scaling/feature
 selection). The script's single JSON stdout line includes
 `"hyperparams"` and `"feature_engineering"` keys.
@@ -114,33 +145,38 @@ returns `"objective_changed": True` and `"previous_objective": {...}`
 instead of silently mixing incompatible histories -- surfaced by the
 CLI/Streamlit/`report.md` as a warning banner, not a raise.
 
-## Per-objective experiment storage scoping
+## Dataset identity and isolated runs
 
-`app/agent.py::run_agent()` no longer writes every run into one fixed
-`workspace/experiments.json`. Before entering the Ralph Loop it profiles
-the dataset, derives the plan (task type, target column, metric), and
-computes a scope key from `(dataset_path, task_type, target_column,
-metric)` via `app/run_scope.py::scope_key()` (dataset path resolved to
-absolute first, so relative vs absolute references to the same file
-scope identically). Each distinct objective gets its own directory:
+Experiment history is keyed by a SHA-256 hash of the dataset bytes, task type,
+target column, metric, validation version, experiment configuration version,
+and local versus Docker execution mode. Renaming or moving identical bytes
+preserves the scope; replacing a CSV's contents creates a new scope. Explicit
+history overrides are checked too, including records copied without their
+objective file. Bump `EXPERIMENT_CONFIG_VERSION` in `app/run_scope.py` when
+changing training/search behavior incompatibly.
+
+Every `run_agent()` call snapshots its CSV before profiling and creates:
 
 ```
-workspace/experiments/<dataset-stem>_<task_type>_<hash>/experiments.json
-workspace/experiments/<dataset-stem>_<task_type>_<hash>/objective.json
+workspace/runs/<run-id>/inputs/<dataset.csv>
+workspace/runs/<run-id>/generated/iteration_N.py
+workspace/runs/<run-id>/models/iteration_N_<model>.joblib
+workspace/runs/<run-id>/models/best_model.joblib
+workspace/runs/<run-id>/reports/report.md
+workspace/runs/<run-id>/reports/holdout.json
+workspace/runs/<run-id>/experiments.json
 ```
 
-e.g. a classification run against `sample_churn.csv` and a regression
-run against `sample_regression.csv` land in two entirely separate
-files/directories and never see each other's records -- this is what
-fixes the earlier bug where an unrelated dataset/task's iterations
-showed up inside a different run's history and iteration numbering.
-Reruns of the *literal same* objective (same dataset + task type +
-target + metric) still resolve to the same scoped file, so cross-run
-duplicate prevention and best-tracking (`app/experiment_memory.py`,
-`app/ralph.py`) continue to work exactly as before within that scope.
+Shared resumable history remains in `workspace/experiments/<scope>/experiments.json`.
+A run's `experiments.json` is a frozen snapshot used for UI downloads. Reports,
+models, input files and generated code from earlier runs remain unchanged.
+Uploads also get unique directories, even when their filenames match.
 
-Pass an explicit `experiments_path=` to `run_agent()` (or
-`--experiments-path` on the CLI) to override auto-scoping.
+Cross-process locks prevent two writers using the same history simultaneously;
+a second writer gets a clear active-run error and can retry after completion.
+Different histories can run concurrently. History writes use atomic replacement.
+No filesystem location is inferred from an explicit history override for model
+output; models always stay inside their run directory.
 
 ## `stop_mode`: target vs optimize
 
@@ -171,7 +207,7 @@ result) *unless* the caller explicitly requests `"rmse"`/`"mae"`. When
 from an explicit `0.80`): classification defaults to `0.80` for f1
 (unchanged -- f1/accuracy are already bounded `[0,1]`); r2 defaults to
 `0.75`; rmse/mae -- which have no fixed scale -- derive a heuristic
-target of `0.5 * target_std` from the profile, documented inline as a
+target of `0.5 * target_std` from the development profile, documented inline as a
 heuristic in both a code comment and the plan's `steps` list. This is
 why a `$50k`-scale salary dataset no longer gets compared against a
 flat, meaningless `0.80`.
@@ -216,25 +252,17 @@ python app/main.py \
   --max-iterations 5
 ```
 
-Outputs are written under `workspace/`:
+Outputs use the run layout above. The CLI prints the exact report and model
+paths; `run_agent()` also returns `run_dir`, `generated_dir`, `dataset_snapshot`,
+`report_path`, `best_model_path`, and `run_experiments_path`.
 
-- `workspace/generated/iteration_N.py` -- generated scripts per iteration
-- `workspace/experiments/<scope>/experiments.json` -- log of every
-  experiment tried for this objective (see "Per-objective experiment
-  storage scoping" above)
-- `workspace/reports/report.md` -- final Markdown report
-- `workspace/models/<scope>/` -- the fitted model object from each
-  experiment (`iteration_<N>_<model_name>.joblib`, saved via
-  `joblib.dump` right after training -- the full sklearn `Pipeline`
-  object when feature_engineering=`"pipeline"`, or the bare estimator
-  for `"basic"`), plus `best_model.joblib`, a copy of the best-scoring
-  experiment's model file for this scope. Load one back with:
+For a local run, load a model from the project environment using its returned path:
 
-  ```python
-  import joblib
-  model = joblib.load("workspace/models/<scope>/best_model.joblib")
-  predictions = model.predict(new_data)
-  ```
+```python
+import joblib
+model = joblib.load(result["best_model_path"])
+predictions = model.predict(new_data)  # raw feature DataFrame
+```
 
 Add `--sandbox` to run generated code inside a Docker container instead
 of a plain local subprocess (see "Docker sandbox" below). Off by
@@ -253,7 +281,7 @@ breakdown (model, hyperparams, feature engineering, score, status, and
 the Analyst's summary), a final "TARGET ACHIEVED" / "MAX ITERATIONS
 REACHED" banner, and download buttons for `report.md` and
 `experiments.json`. Uploaded CSVs are saved to
-`workspace/datasets/<uploaded_name>`. Agent errors (bad CSV, no usable
+`workspace/uploads/<upload-id>/<uploaded_name>`. Agent errors (bad CSV, no usable
 target, etc.) are shown with `st.error(...)` instead of crashing the
 page.
 
@@ -271,16 +299,24 @@ docker build -t ai-ds-agent-sandbox:latest -f docker/sandbox.Dockerfile .
 Enable it end-to-end via the CLI's `--sandbox` flag, or `use_docker=True`
 on `app.executor.execute` / `app.agent.run_agent` / `app.ralph.run_ralph_loop`.
 
-If the `docker` binary isn't on `PATH`, or a daemon isn't reachable
-(`docker info` fails), `run_script_in_docker` automatically falls back
-to the plain subprocess path (`ExecutionResult.sandboxed = False`) so
-the pipeline keeps working without Docker installed. **This is the
-state actually verified in this repo/CI** -- Docker was not available
-in the dev environment used to build this, so only the graceful-fallback
-path has been exercised (`tests/test_python_runner_docker.py`, which
-skips instead of testing real isolation if a working daemon *is*
-present). The isolated-container path is implemented per spec but not
-exercised end-to-end here.
+If Docker or its daemon/image is unavailable, the requested sandbox run fails
+clearly and the CLI exits nonzero. Code is never retried on the host. The runner
+mounts the dataset and `tools/` helpers read-only, maps writable generated-code
+and model directories explicitly, disables networking, uses a read-only root
+filesystem and bounds memory, CPU and process count. Timeouts forcibly remove
+the named container. The executed script is mounted read-only, and model promotion
+uses atomic replacement to avoid following pre-existing output links. Generated
+scripts resolve their dataset, helper and output
+paths from environment variables supplied by the runner.
+
+Model paths returned by container code must resolve inside the model output
+mount. Holdout prediction and model deserialization also run inside Docker;
+the Streamlit UI does not deserialize sandbox-created model files on the host.
+Enable the UI's **Run code in Docker sandbox** checkbox for this execution mode.
+
+`tests/test_sandbox_contract.py` includes command-contract tests and a real
+container training/holdout test. The latter skips locally if Docker or the image
+is missing. The Linux CI job builds the sandbox image before running the suite.
 
 ## Docker Compose (Phase 13)
 

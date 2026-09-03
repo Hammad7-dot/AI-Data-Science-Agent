@@ -12,6 +12,7 @@ from app.experiment_memory import ExperimentMemory
 from app.experiment_strategist import choose_next_experiment
 from app.agent import run_agent
 from app.run_scope import default_experiments_path, scope_key
+from tools.validation import VALIDATION_VERSION
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATASET_PATH = str(PROJECT_ROOT / "workspace" / "datasets" / "sample_churn.csv")
@@ -44,7 +45,7 @@ def test_duplicate_prevention_persists_across_runs(tmp_path):
         },
     ]
     with open(experiments_path, "w", encoding="utf-8") as f:
-        json.dump(seeded, f)
+        json.dump([dict(record, validation_version=VALIDATION_VERSION, scope_key=scope_key(DATASET_PATH, "classification", "churn", "f1")) for record in seeded], f)
 
     seeded_identities = {_experiment_identity(r) for r in seeded}
 
@@ -633,10 +634,8 @@ def test_run_ralph_loop_saves_best_model_to_disk(tmp_path):
         assert os.path.exists(p)
 
 
-def test_old_experiment_records_without_model_path_do_not_crash(tmp_path):
-    """Simulate experiments.json records saved before this feature
-    existed (no 'model_path' key at all). run_ralph_loop's best-model
-    copy step must handle that gracefully instead of crashing."""
+def test_current_validation_records_without_model_path_do_not_crash(tmp_path):
+    """Current-protocol history with a missing model path remains readable."""
     workspace_dir = str(tmp_path / "workspace")
     experiments_path = os.path.join(workspace_dir, "experiments", "scope", "experiments.json")
     workdir = str(tmp_path / "generated")
@@ -655,7 +654,7 @@ def test_old_experiment_records_without_model_path_do_not_crash(tmp_path):
     ]
     os.makedirs(os.path.dirname(experiments_path), exist_ok=True)
     with open(experiments_path, "w", encoding="utf-8") as f:
-        json.dump(seeded, f)
+        json.dump([dict(record, validation_version=VALIDATION_VERSION, scope_key=scope_key(DATASET_PATH, "classification", "churn", "f1")) for record in seeded], f)
 
     # Should not raise even though the seeded best_experiment (score 0.95,
     # very likely to remain best) has no model_path.

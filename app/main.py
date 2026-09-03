@@ -84,8 +84,8 @@ def parse_args(argv=None):
         default=False,
         help=(
             "Run generated code inside the Docker sandbox (tools/python_runner.run_script_in_docker) "
-            "instead of a plain local subprocess. Off by default since Docker may not be available "
-            "in dev/test environments; falls back to plain subprocess automatically if Docker is missing."
+            "instead of a plain local subprocess. Docker must be installed and its image built; "
+            "a sandbox failure never falls back to host execution."
         ),
     )
     return parser.parse_args(argv)
@@ -160,6 +160,13 @@ def main(argv=None) -> int:
     print(f"Best model:      {best.get('model', 'n/a')}")
     print(f"Best metric:     {best.get('metric', 'n/a')}")
     print(f"Best score:      {best.get('score', 'n/a')}")
+    if plan.get("task_type") in ("classification", "regression"):
+        print("Score basis:     out-of-fold cross-validation (target status uses this score)")
+        holdout = result.get("holdout_evaluation")
+        if holdout:
+            print(f"Final holdout:   {holdout['metric']} = {holdout['score']:.4f} ({holdout['samples']} rows)")
+        elif result.get("holdout_error"):
+            print(f"Final holdout unavailable: {result['holdout_error']}")
     print(f"Report path:     {result['report_path']}")
     if result.get("best_model_path"):
         print(f"Best model saved to: {result['best_model_path']}")
@@ -178,7 +185,7 @@ def main(argv=None) -> int:
             print(f"  Optimization status: {note or 'still improving -- no diminishing-returns signal yet.'}")
     print("=" * 60)
 
-    return 0
+    return 1 if result["status"] == "sandbox_unavailable" else 0
 
 
 if __name__ == "__main__":

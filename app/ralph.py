@@ -19,9 +19,11 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import uuid
+from pathlib import Path
 from datetime import datetime, timezone
 
-from tools.dataset import profile_dataset
+from tools.validation import profile_for_training, VALIDATION_VERSION
 from app.planner import create_plan
 from app.coder import generate_code
 from app.executor import execute
@@ -29,7 +31,8 @@ from app.evaluator import evaluate, HIGHER_IS_BETTER, LOWER_IS_BETTER
 from app.analyst import interpret_results
 from app.experiment_memory import ExperimentMemory
 from app.experiment_strategist import choose_next_experiment
-from app.run_scope import default_objective_path, default_models_dir
+from app.run_scope import (default_objective_path, dataset_digest,
+                           EXPERIMENT_CONFIG_VERSION, lock_experiment_history, scope_key)
 
 
 def _load_experiments(experiments_path: str) -> list:
@@ -43,9 +46,7 @@ def _load_experiments(experiments_path: str) -> list:
 
 
 def _save_experiments(experiments_path: str, experiments: list) -> None:
-    os.makedirs(os.path.dirname(experiments_path) or ".", exist_ok=True)
-    with open(experiments_path, "w", encoding="utf-8") as f:
-        json.dump(experiments, f, indent=2, default=str)
+    _write_json(experiments_path, experiments)
 
 
 def _experiment_identity(record: dict) -> tuple:
@@ -78,9 +79,7 @@ def _load_objective(experiments_path: str) -> dict | None:
 
 def _save_objective(experiments_path: str, objective: dict) -> None:
     path = _objective_path(experiments_path)
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(objective, f, indent=2, default=str)
+    _write_json(path, objective)
 
 
 # Used by experiment_memory.is_stagnating() / the strategist's diminishing-
@@ -108,10 +107,15 @@ def _is_better(candidate: dict, current_best: dict | None, metric: str) -> bool:
     return candidate["score"] > current_best["score"]
 
 
-def _write_json(path: str, data: dict) -> None:
+def _write_json(path: str, data) -> None:
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, default=str)
+    temporary = Path(path).with_name(Path(path).name + "." + uuid.uuid4().hex + ".tmp")
+    try:
+        with open(temporary, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, default=str)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _write_best_model_artifacts(models_dir: str, best_experiment: dict, plan: dict) -> None:
@@ -167,6 +171,7 @@ def _write_training_history(models_dir: str, experiments: list) -> None:
     _write_json(os.path.join(models_dir, "training_history.json"), history)
 
 
+@lock_experiment_history
 def run_ralph_loop(
     dataset_path: str,
     objective: str,
@@ -179,9 +184,21 @@ def run_ralph_loop(
     profile: dict | None = None,
     stop_mode: str = "target",
     reset: bool = False,
+    run_dir: str | None = None,
 ) -> dict:
+    snapshot_needed = run_dir is None
+    run_dir = str(Path(run_dir or Path(workdir) / uuid.uuid4().hex).resolve())
+    workdir = os.path.join(run_dir, "generated")
+    models_dir = os.path.join(run_dir, "models")
+    os.makedirs(workdir, exist_ok=True)
+    if snapshot_needed:
+        snapshot_dir = Path(run_dir) / "inputs"
+        snapshot_dir.mkdir()
+        snapshot = snapshot_dir / Path(dataset_path).name
+        shutil.copyfile(dataset_path, snapshot)
+        dataset_path = str(snapshot)
     if profile is None:
-        profile = profile_dataset(dataset_path)
+        profile = profile_for_training(dataset_path)
 
     # The objective (metric, target_score, direction) is frozen here, at
     # the single entry point into the plan, and is never reassigned
@@ -199,19 +216,11 @@ def run_ralph_loop(
         "target_score": plan.get("target_score"),
         "direction": plan.get("direction"),
         "candidate_models": plan.get("candidate_models"),
+        "validation_version": VALIDATION_VERSION,
+        "dataset_sha256": dataset_digest(dataset_path),
+        "experiment_config_version": EXPERIMENT_CONFIG_VERSION,
+        "scope_key": scope_key(dataset_path, plan.get("task_type"), plan.get("target"), plan.get("metric"), use_docker=use_docker),
     }
-    # experiments_path = <workspace_dir>/experiments/<scope_key>/experiments.json
-    # (see app/run_scope.py::default_experiments_path) -- walk back up
-    # structurally to recover workspace_dir rather than string-replacing
-    # "experiments" -> "models", which is fragile.
-    workspace_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(experiments_path))))
-    models_dir = default_models_dir(
-        workspace_dir=workspace_dir,
-        dataset_path=dataset_path,
-        task_type=plan.get("task_type"),
-        target_column=plan.get("target"),
-        metric=plan.get("metric"),
-    )
 
     # `reset=True` starts this objective's history over from scratch --
     # old records (e.g. from a run made under a since-fixed bug) are
@@ -219,6 +228,9 @@ def run_ralph_loop(
     # which reads as "the loop kept going" even when it correctly
     # stopped after one iteration this time.
     previous_objective = None if reset else _load_objective(experiments_path)
+    if previous_objective and any(previous_objective.get(key) != current_objective[key]
+                                  for key in ("scope_key", "dataset_sha256", "experiment_config_version", "task_type", "target_column", "metric")):
+        raise ValueError("Incompatible dataset or experiment configuration; use reset=True or a new experiments path.")
     objective_changed = bool(
         previous_objective
         and (
@@ -226,9 +238,12 @@ def run_ralph_loop(
             or previous_objective.get("target_score") != current_objective.get("target_score")
         )
     )
-    _save_objective(experiments_path, current_objective)
-
     experiments = [] if reset else _load_experiments(experiments_path)
+    if any(record.get("validation_version") != VALIDATION_VERSION for record in experiments):
+        raise ValueError("Incompatible validation history; use reset=True (--reset) or a new experiments path.")
+    if any(record.get("scope_key") != current_objective["scope_key"] for record in experiments):
+        raise ValueError("Incompatible dataset or experiment configuration in history; use reset=True or a new experiments path.")
+    _save_objective(experiments_path, current_objective)
     status = "max_iterations_reached"
     iterations_run = 0
     target_ever_achieved = False
@@ -286,7 +301,11 @@ def run_ralph_loop(
             hyperparams=hyperparams,
             models_dir=models_dir,
         )
-        execution_result = execute(code, workdir, iteration, use_docker=use_docker)
+        if use_docker:
+            execution_result = execute(code, workdir, iteration, use_docker=True,
+                                       dataset_path=dataset_path, models_dir=models_dir)
+        else:
+            execution_result = execute(code, workdir, iteration, use_docker=False)
         eval_result = evaluate(execution_result, plan, plan.get("target_score"))
         analysis = interpret_results(execution_result, eval_result, plan, memory=memory)
 
@@ -306,11 +325,21 @@ def run_ralph_loop(
             "train_samples": raw.get("train_samples"),
             "test_samples": raw.get("test_samples"),
             "feature_names": raw.get("feature_names"),
+            "validation_method": raw.get("validation_method"),
+            "cv_folds": raw.get("cv_folds"),
+            "validation_version": VALIDATION_VERSION,
+            "scope_key": current_objective["scope_key"],
+            "code_path": os.path.join(workdir, f"iteration_{iteration}.py"),
             "rationale": rationale,
             "analysis": analysis.get("summary"),
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
         experiments.append(record)
+        # Infrastructure failure is visible in this run, but it must not mark
+        # an unexecuted configuration as tried in the reusable history.
+        if use_docker and not execution_result.sandboxed:
+            status = "sandbox_unavailable"
+            break
         _save_experiments(experiments_path, experiments)
         memory.add(record)
 
@@ -333,7 +362,12 @@ def run_ralph_loop(
         try:
             os.makedirs(models_dir, exist_ok=True)
             best_model_path = os.path.join(models_dir, "best_model.joblib")
-            shutil.copy2(best_experiment["model_path"], best_model_path)
+            temporary_model = Path(models_dir) / (uuid.uuid4().hex + ".joblib.tmp")
+            try:
+                shutil.copy2(best_experiment["model_path"], temporary_model)
+                os.replace(temporary_model, best_model_path)
+            finally:
+                temporary_model.unlink(missing_ok=True)
         except OSError:
             best_model_path = None
 
@@ -364,6 +398,11 @@ def run_ralph_loop(
         "stop_mode": stop_mode,
         "experiments_path": experiments_path,
         "stagnation_detected": stagnation_detected,
+        "run_dir": run_dir,
+        "generated_dir": workdir,
+        "models_dir": models_dir,
+        "sandbox_requested": use_docker,
+        "dataset_snapshot": dataset_path,
     }
     if objective_changed:
         result["previous_objective"] = previous_objective

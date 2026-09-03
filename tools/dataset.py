@@ -128,7 +128,12 @@ def profile_dataset(path: str, target_hint: str | None = None) -> dict:
     data (missing values, mixed types) - it should always describe what
     it finds.
     """
-    df = pd.read_csv(path)
+    return profile_frame(pd.read_csv(path), path, target_hint)
+
+
+def profile_frame(df: pd.DataFrame, path: str, target_hint: str | None = None,
+                  task_type_hint: str | None = None) -> dict:
+    """Profile an already selected partition without rereading the full CSV."""
 
     numeric_cols = df.select_dtypes(include="number").columns.tolist()
     categorical_cols = df.select_dtypes(exclude="number").columns.tolist()
@@ -144,6 +149,8 @@ def profile_dataset(path: str, target_hint: str | None = None) -> dict:
             task_type = "regression"
         else:
             task_type = "classification"
+        if task_type_hint is not None:
+            task_type = task_type_hint
         target_info = {
             "name": target,
             "dtype": str(df[target].dtype),

@@ -10,13 +10,18 @@ single dataset + objective.
 from __future__ import annotations
 
 import os
+import json
+import shutil
+import uuid
+from pathlib import Path
 
 from app.ralph import run_ralph_loop
 from app.experiment_memory import ExperimentMemory
 from app.reporting import objective_lines, display_status, target_gap_text, diminishing_return_note
 from app.planner import create_plan
-from tools.dataset import profile_dataset
 from app.run_scope import default_experiments_path
+from tools.validation import evaluate_holdout, profile_for_training
+from app.executor import evaluate_in_sandbox
 
 
 def _direction_symbol(direction: str) -> str:
@@ -91,6 +96,16 @@ def _build_report(objective: str, target_score, result: dict) -> str:
     lines.append("")
     lines.append(f"**Final status:** {result['status']}")
     lines.append("")
+    if plan.get("task_type") in ("classification", "regression"):
+        lines.append("**Search scores:** out-of-fold cross-validation on the development partition; target status refers to this score.")
+        lines.append("")
+        lines.append("## Final holdout evaluation")
+        holdout = result.get("holdout_evaluation")
+        if holdout:
+            lines.append(f"Selected model: {holdout['metric']} = {holdout['score']:.4f} on {holdout['samples']} held-out rows. This score was not used for model selection.")
+        else:
+            lines.append(f"Unavailable: {result.get('holdout_error', 'No exported model available.')}")
+        lines.append("")
 
     leakage_warnings = plan.get("leakage_warnings") or []
     if leakage_warnings:
@@ -113,6 +128,8 @@ def _build_report(objective: str, target_score, result: dict) -> str:
     lines.append("## Dataset profile")
     lines.append("")
     lines.append(f"- Rows: {profile.get('rows')}")
+    if profile.get("statistics_partition") == "development":
+        lines.append(f"- Statistics below describe the {profile['profile_rows']} development rows only.")
     lines.append(f"- Columns: {profile.get('columns')}")
     lines.append(f"- Missing values (total): {profile.get('missing_values')}")
     lines.append(f"- Duplicate rows: {profile.get('duplicate_rows')}")
@@ -270,8 +287,17 @@ def run_agent(
     reset: bool = False,
     target_column: str | None = None,
 ) -> dict:
-    workdir = os.path.join(workspace_dir, "generated")
-    reports_dir = os.path.join(workspace_dir, "reports")
+    dataset_path = os.path.abspath(dataset_path)
+    workspace_dir = os.path.abspath(workspace_dir)
+    source_dataset = dataset_path
+    run_dir = Path(workspace_dir) / "runs" / uuid.uuid4().hex
+    input_dir = run_dir / "inputs"
+    input_dir.mkdir(parents=True)
+    snapshot = input_dir / Path(dataset_path).name
+    shutil.copyfile(dataset_path, snapshot)
+    dataset_path = str(snapshot)
+    workdir = str(run_dir / "generated")
+    reports_dir = str(run_dir / "reports")
     report_path = os.path.join(reports_dir, "report.md")
 
     os.makedirs(workdir, exist_ok=True)
@@ -288,7 +314,7 @@ def run_agent(
     # numeric column looks target-shaped" (profile_dataset's fallback,
     # which is a reasonable last resort but not a substitute for the
     # user telling it directly).
-    profile = profile_dataset(dataset_path, target_hint=target_column)
+    profile = profile_for_training(dataset_path, target_hint=target_column)
     plan_preview = create_plan(profile, objective, metric=metric, target_score=target_score)
 
     if experiments_path is None:
@@ -298,6 +324,7 @@ def run_agent(
             task_type=plan_preview.get("task_type"),
             target_column=plan_preview.get("target"),
             metric=plan_preview.get("metric"),
+            use_docker=use_docker,
         )
 
     result = run_ralph_loop(
@@ -312,7 +339,28 @@ def run_agent(
         profile=profile,
         stop_mode=stop_mode,
         reset=reset,
+        run_dir=str(run_dir),
     )
+
+    result["source_dataset"] = source_dataset
+    result["dataset_snapshot"] = dataset_path
+    result["run_experiments_path"] = str(run_dir / "experiments.json")
+    with open(result["run_experiments_path"], "w", encoding="utf-8") as f:
+        json.dump(result["all_experiments"], f, indent=2)
+
+    if result.get("best_model_path") and result["plan"]["task_type"] in ("classification", "regression"):
+        try:
+            if use_docker:
+                result["holdout_evaluation"] = evaluate_in_sandbox(
+                    result["best_model_path"], dataset_path, result["plan"], result["generated_dir"])
+            else:
+                result["holdout_evaluation"] = evaluate_holdout(result["best_model_path"], dataset_path, result["plan"])
+        except (ValueError, OSError) as exc:
+            result["holdout_error"] = str(exc)
+    if result["plan"]["task_type"] in ("classification", "regression"):
+        with open(os.path.join(reports_dir, "holdout.json"), "w", encoding="utf-8") as f:
+            json.dump(result.get("holdout_evaluation") or
+                      {"error": result.get("holdout_error", "No exported model available.")}, f, indent=2)
 
     report_md = _build_report(objective, target_score, result)
     with open(report_path, "w", encoding="utf-8") as f:
