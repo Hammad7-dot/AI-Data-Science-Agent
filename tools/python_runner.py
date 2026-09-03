@@ -150,6 +150,10 @@ def run_script_in_docker(
         "-e", "OPENBLAS_NUM_THREADS=1", "-e", "OMP_NUM_THREADS=1",
         "-w", "/workspace",
     ]
+    # Match the host identity on POSIX so the capability-restricted container can
+    # write to bind-mounted output directories without making them world-writable.
+    if hasattr(os, "getuid") and hasattr(os, "getgid"):
+        docker_cmd += ["--user", f"{os.getuid()}:{os.getgid()}"]
     if dataset_path:
         dataset = Path(dataset_path).resolve(strict=True)
         docker_cmd += ["-v", f"{dataset}:/input/dataset.csv:ro",

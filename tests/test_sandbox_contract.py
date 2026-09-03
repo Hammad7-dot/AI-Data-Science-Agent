@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -26,6 +27,8 @@ def test_sandbox_never_falls_back_to_host(tmp_path, monkeypatch, failure):
 
 
 def test_sandbox_mounts_explicit_inputs_helpers_and_outputs(tmp_path, monkeypatch):
+    monkeypatch.setattr(os, "getuid", lambda: 1001, raising=False)
+    monkeypatch.setattr(os, "getgid", lambda: 1002, raising=False)
     dataset = tmp_path / "data.csv"
     dataset.write_text("x,y\n1,2\n")
     calls = []
@@ -46,6 +49,7 @@ def test_sandbox_mounts_explicit_inputs_helpers_and_outputs(tmp_path, monkeypatc
     assert "AGENT_PROJECT_ROOT=/opt/agent" in command
     assert "--network none" in joined
     assert "--read-only" in command
+    assert command[command.index("--user") + 1] == "1001:1002"
     assert f"{(tmp_path / 'generated' / 'generated_script.py').resolve()}:/workspace/generated_script.py:ro" in command
 
 
