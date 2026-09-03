@@ -97,8 +97,9 @@ def test_real_docker_training_and_holdout(tmp_path):
     pd.DataFrame({"x": np.arange(60, dtype=float), "target": np.arange(60) * 2.0}).to_csv(dataset, index=False)
     result = run_agent(str(dataset), "Predict target", max_iterations=1,
                        workspace_dir=str(tmp_path / "workspace"), use_docker=True)
-    assert result["best_model_path"], result["all_experiments"]
+    assert result["best_model_path"], "\n".join(str(record.get("reason")) for record in result["all_experiments"])
     assert Path(result["best_model_path"]).is_file()
+    assert "holdout_evaluation" in result, result.get("holdout_error")
     assert result["holdout_evaluation"]["score"] == pytest.approx(1.0)
 
 

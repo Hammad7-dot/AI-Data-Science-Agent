@@ -8,6 +8,10 @@ env/
 .pytest_cache/
 .mypy_cache/
 .ipynb_checkpoints/
-workspace/
+workspace/*
+!workspace/datasets/
+workspace/datasets/*
+!workspace/datasets/sample_churn.csv
+!workspace/datasets/sample_regression.csv
 *.log
 .DS_Store
