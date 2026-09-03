@@ -97,6 +97,13 @@ if METRIC not in metric_values:
     raise ValueError(f"Metric '{METRIC}' is not valid for classification")
 actual_metric = METRIC
 score = metric_values[actual_metric]
+CV_SCORER = {
+    "accuracy": "accuracy",
+    "precision": "precision_weighted",
+    "recall": "recall_weighted",
+    "f1": "f1_weighted",
+}[actual_metric]
+cv_scores = cross_validate(model, X_train, y_train, cv=cv, scoring=CV_SCORER)["test_score"]
 
 result = {
     "model": MODEL_NAME,
@@ -118,6 +125,7 @@ result = {
     "validation_method": "out_of_fold",
     "cv_folds": cv.n_splits,
 }
+result.update(summarize_cv_scores(cv_scores))
 print(json.dumps(result))
 '''
         sklearn_metrics_import = "from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score"
@@ -139,6 +147,14 @@ if METRIC not in metric_values:
     raise ValueError(f"Metric '{METRIC}' is not valid for regression")
 actual_metric = METRIC
 score = metric_values[actual_metric]
+CV_SCORER = {
+    "r2": "r2",
+    "rmse": "neg_root_mean_squared_error",
+    "mae": "neg_mean_absolute_error",
+}[actual_metric]
+cv_scores = cross_validate(model, X_train, y_train, cv=cv, scoring=CV_SCORER)["test_score"]
+if CV_SCORER.startswith("neg_"):
+    cv_scores = -cv_scores
 
 result = {
     "model": MODEL_NAME,
@@ -159,6 +175,7 @@ result = {
     "validation_method": "out_of_fold",
     "cv_folds": cv.n_splits,
 }
+result.update(summarize_cv_scores(cv_scores))
 print(json.dumps(result))
 '''
         sklearn_metrics_import = "from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score"
@@ -224,8 +241,9 @@ from pathlib import Path
 
 sys.path.insert(0, os.environ.get("AGENT_PROJECT_ROOT", {project_root_repr}))
 
-from sklearn.model_selection import cross_val_predict
+from sklearn.model_selection import cross_val_predict, cross_validate
 from tools.validation import split_development_holdout, validation_folds
+from tools.uncertainty import summarize_cv_scores
 {sklearn_metrics_import}
 {ml_import}
 

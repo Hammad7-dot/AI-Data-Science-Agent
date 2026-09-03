@@ -13,13 +13,13 @@ from sklearn.model_selection import train_test_split
 from app.coder import generate_code
 
 
-def train(tmp_path, frame, mode, task="regression", dropped=None):
+def train(tmp_path, frame, mode, task="regression", dropped=None, metric=None):
     path = tmp_path / "data.csv"
     frame.to_csv(path, index=False)
     model_name = "random_forest" if task == "classification" else "random_forest_regressor"
     plan = {
         "task_type": task, "target": "target",
-        "metric": "f1" if task == "classification" else "r2",
+        "metric": metric or ("f1" if task == "classification" else "r2"),
         "candidate_models": [model_name],
         "medium_cardinality_columns": ["city"],
         "dropped_high_cardinality_columns": dropped or [],
@@ -120,6 +120,26 @@ def test_cross_validation_fits_imputation_inside_each_fold(tmp_path):
     assert result["score"] == pytest.approx(r2_score(development.target, expected))
 
 
+@pytest.mark.parametrize(("task", "metric"), [("classification", "f1"), ("regression", "rmse")])
+def test_generated_training_reports_fold_level_uncertainty(tmp_path, task, metric):
+    """Catches missing fold validation data or population-deviation summaries."""
+    if task == "classification":
+        frame = pd.DataFrame({"x": np.arange(60), "target": np.tile([0, 1], 30)})
+    else:
+        frame = pd.DataFrame({"x": np.arange(60), "target": np.arange(60, dtype=float) ** 2})
+
+    _, result = train(tmp_path, frame, "basic", task=task, metric=metric)
+
+    assert len(result["cv_scores"]) == 3
+    assert all(np.isfinite(result["cv_scores"]))
+    assert result["cv_mean"] == pytest.approx(np.mean(result["cv_scores"]))
+    assert result["cv_std"] == pytest.approx(np.std(result["cv_scores"], ddof=1))
+    assert np.isfinite(result["cv_interval_95"]).all()
+    assert result["cv_interval_95"][0] <= result["cv_mean"] <= result["cv_interval_95"][1]
+    if metric == "rmse":
+        assert all(score > 0 for score in result["cv_scores"])
+
+
 def test_agent_reports_holdout_separately_from_selection(tmp_path):
     from app.agent import run_agent
     frame = pd.DataFrame({"x": np.arange(80, dtype=float), "target": np.arange(80) * 2.0})
@@ -131,6 +151,8 @@ def test_agent_reports_holdout_separately_from_selection(tmp_path):
     assert result["holdout_evaluation"]["samples"] == 16
     assert result["holdout_evaluation"]["score"] == pytest.approx(1.0)
     assert "holdout_evaluation" not in result["best_experiment"]
+    for key in ("cv_scores", "cv_mean", "cv_std", "cv_interval_95"):
+        assert key in result["best_experiment"]
     assert "Final holdout" in open(result["report_path"], encoding="utf-8").read()
 
 
