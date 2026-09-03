@@ -103,6 +103,13 @@ def test_real_docker_training_and_holdout(tmp_path):
                        workspace_dir=str(tmp_path / "workspace"), use_docker=True)
     assert result["best_model_path"], "\n".join(str(record.get("reason")) for record in result["all_experiments"])
     assert Path(result["best_model_path"]).is_file()
+    models_dir = Path(result["best_model_path"]).parent
+    assert (models_dir / "schema.json").is_file()
+    assert (models_dir / "explainability.json").is_file()
+    best = result["best_experiment"]
+    assert np.isfinite(best["cv_std"])
+    assert len(best["cv_interval_95"]) == 2
+    assert np.isfinite(best["cv_interval_95"]).all()
     assert "holdout_evaluation" in result, result.get("holdout_error")
     assert result["holdout_evaluation"]["score"] == pytest.approx(1.0)
 

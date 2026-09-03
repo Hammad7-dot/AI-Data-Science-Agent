@@ -260,9 +260,48 @@ For a local run, load a model from the project environment using its returned pa
 
 ```python
 import joblib
+import pandas as pd
+
 model = joblib.load(result["best_model_path"])
+new_data = pd.DataFrame({
+    "age": [34, 52],
+    "city": ["Lahore", "Karachi"],
+})
 predictions = model.predict(new_data)  # raw feature DataFrame
 ```
+
+`best_model.joblib` accepts the original, unprocessed feature columns. It
+performs the saved imputation, encoding, scaling, and feature selection itself.
+The DataFrame must include every raw feature exactly once and use the same dtype
+family (`numeric`, `boolean`, `datetime`, or categorical/text) seen at training.
+If it does not, prediction raises an actionable `ValueError` such as
+`Prediction input schema mismatch: missing columns: city` or
+`incompatible columns: age (expected numeric)`. Use the exported schema to see
+the required input contract:
+
+```python
+import json
+from pathlib import Path
+
+models_dir = Path(result["best_model_path"]).parent
+schema = json.loads((models_dir / "schema.json").read_text())
+print(schema["raw_columns"])
+print(schema["dtype_families"])
+```
+
+Each successful run publishes three model-trust outputs:
+
+- Validation uncertainty in `result["best_experiment"]`: `cv_scores`,
+  `cv_mean`, `cv_std`, and `cv_interval_95` summarize the development folds.
+- `models/schema.json` (also `result["model_schema"]`) describes the raw
+  columns and dtype families accepted by `best_model.joblib`.
+- `models/explainability.json` (also `result["explainability"]`) ranks native
+  coefficients or feature importances when the selected estimator exposes them;
+  otherwise it records why an explanation is unavailable.
+
+The 95% fold interval is descriptive: it shows variation among the validation
+fold scores. It is neither a confidence guarantee for the selected model nor a
+prediction interval for individual rows.
 
 Add `--sandbox` to run generated code inside a Docker container instead
 of a plain local subprocess (see "Docker sandbox" below). Off by

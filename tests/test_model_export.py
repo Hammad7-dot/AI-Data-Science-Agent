@@ -6,6 +6,7 @@ import joblib
 import pandas as pd
 import pytest
 from sklearn.compose import ColumnTransformer
+from sklearn.dummy import DummyRegressor
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
@@ -66,6 +67,29 @@ def test_schema_errors_reject_duplicate_feature_columns():
 
     assert "unexpected" in str(error.value).lower()
     assert "city" in str(error.value).lower()
+
+
+@pytest.mark.parametrize("training, supplied, expected_family", [
+    (
+        pd.DataFrame({"enabled": pd.Series([True, False], dtype="boolean")}),
+        pd.DataFrame({"enabled": [1, 0]}),
+        "boolean",
+    ),
+    (
+        pd.DataFrame({"observed_at": pd.to_datetime(["2026-01-01", "2026-01-02"])}),
+        pd.DataFrame({"observed_at": ["2026-01-01"]}),
+        "datetime",
+    ),
+])
+def test_schema_errors_name_boolean_and_datetime_families(training, supplied, expected_family):
+    """Catches boolean or datetime inputs being classified as generic numeric/text."""
+    export = ValidatedModel(DummyRegressor(), training, "target")
+
+    with pytest.raises(ValueError) as error:
+        export.predict(supplied)
+
+    assert "incompatible" in str(error.value).lower()
+    assert expected_family in str(error.value).lower()
 
 
 def test_predictions_require_a_pandas_dataframe():
