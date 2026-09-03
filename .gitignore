@@ -15,3 +15,5 @@ workspace/datasets/*
 !workspace/datasets/sample_regression.csv
 *.log
 .DS_Store
+
+.worktrees/
