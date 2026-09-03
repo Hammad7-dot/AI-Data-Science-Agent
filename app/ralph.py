@@ -325,6 +325,8 @@ def run_ralph_loop(
             "train_samples": raw.get("train_samples"),
             "test_samples": raw.get("test_samples"),
             "feature_names": raw.get("feature_names"),
+            "model_schema": raw.get("model_schema"),
+            "explainability": raw.get("explainability"),
             "validation_method": raw.get("validation_method"),
             "cv_folds": raw.get("cv_folds"),
             "validation_version": VALIDATION_VERSION,
@@ -375,6 +377,10 @@ def run_ralph_loop(
         try:
             os.makedirs(models_dir, exist_ok=True)
             _write_best_model_artifacts(models_dir, best_experiment, plan)
+            if isinstance(best_experiment.get("model_schema"), dict):
+                _write_json(os.path.join(models_dir, "schema.json"), best_experiment["model_schema"])
+            if isinstance(best_experiment.get("explainability"), dict):
+                _write_json(os.path.join(models_dir, "explainability.json"), best_experiment["explainability"])
         except OSError:
             pass
     try:
@@ -390,6 +396,8 @@ def run_ralph_loop(
         "iterations_run": iterations_run,
         "best_experiment": best_experiment,
         "best_model_path": best_model_path,
+        "model_schema": best_experiment.get("model_schema") if best_experiment else None,
+        "explainability": best_experiment.get("explainability") if best_experiment else None,
         "all_experiments": experiments,
         "plan": plan,
         "profile": profile,

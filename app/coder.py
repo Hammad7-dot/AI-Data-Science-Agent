@@ -113,6 +113,8 @@ result = {
     "train_samples": TRAIN_SAMPLES,
     "test_samples": TEST_SAMPLES,
     "feature_names": FEATURE_NAMES,
+    "model_schema": MODEL_SCHEMA,
+    "explainability": EXPLAINABILITY,
     "validation_method": "out_of_fold",
     "cv_folds": cv.n_splits,
 }
@@ -152,6 +154,8 @@ result = {
     "train_samples": TRAIN_SAMPLES,
     "test_samples": TEST_SAMPLES,
     "feature_names": FEATURE_NAMES,
+    "model_schema": MODEL_SCHEMA,
+    "explainability": EXPLAINABILITY,
     "validation_method": "out_of_fold",
     "cv_folds": cv.n_splits,
 }
@@ -161,10 +165,12 @@ print(json.dumps(result))
 
     model_save_block = '''
 MODELS_DIR = os.environ.get("AGENT_MODELS_DIR", ''' + repr(models_dir) + ''')
+exported_model = ValidatedModel(model, X_train, TARGET)
+MODEL_SCHEMA = exported_model.schema_metadata()
+EXPLAINABILITY = explain_model(exported_model)
 if MODELS_DIR:
     Path(MODELS_DIR).mkdir(parents=True, exist_ok=True)
     MODEL_PATH = str(Path(MODELS_DIR) / f"iteration_{ITERATION}_{MODEL_NAME}.joblib")
-    exported_model = ValidatedModel(model, X_train, TARGET)
     joblib.dump(exported_model, MODEL_PATH)
 else:
     MODEL_PATH = None
@@ -205,7 +211,8 @@ TEST_SAMPLES = len(X_holdout)
     ml_import = (
         "from sklearn.pipeline import Pipeline\n"
         "from tools.ml import get_model, build_preprocessing_pipeline\n"
-        "from tools.model_export import ValidatedModel"
+        "from tools.model_export import ValidatedModel\n"
+        "from tools.explainability import explain_model"
     )
 
     code = f'''{header}import json

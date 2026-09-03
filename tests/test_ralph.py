@@ -730,6 +730,32 @@ def test_run_ralph_loop_writes_new_artifact_files(tmp_path):
             assert key in rec
 
 
+def test_run_ralph_loop_promotes_schema_and_explanation_artifacts(tmp_path):
+    """Catches winner metadata being lost after the sandbox training result."""
+    workspace_dir = str(tmp_path / "workspace")
+    experiments_path = os.path.join(workspace_dir, "experiments", "scope", "experiments.json")
+    result = run_ralph_loop(
+        dataset_path=DATASET_PATH,
+        objective="Predict churn",
+        target_score=0.999,
+        metric="f1",
+        max_iterations=1,
+        workdir=str(tmp_path / "generated"),
+        experiments_path=experiments_path,
+    )
+
+    models_dir = os.path.dirname(result["best_model_path"])
+    with open(os.path.join(models_dir, "schema.json"), encoding="utf-8") as f:
+        schema = json.load(f)
+    with open(os.path.join(models_dir, "explainability.json"), encoding="utf-8") as f:
+        explanation = json.load(f)
+
+    assert schema == result["model_schema"] == result["best_experiment"]["model_schema"]
+    assert explanation == result["explainability"] == result["best_experiment"]["explainability"]
+    assert schema["raw_columns"]
+    assert explanation["available"] is True
+
+
 def test_generated_code_reports_feature_info_for_basic_and_pipeline(tmp_path):
     """Generated code for both 'basic' and 'pipeline' feature_engineering
     variants must execute successfully and report n_features/train_samples/
