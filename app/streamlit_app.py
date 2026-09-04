@@ -311,10 +311,14 @@ if run_clicked:
                     cols[0].metric("Model", best.get("model"))
                     cols[1].metric(f"Score ({best.get('metric')})", _fmt_score_val(best.get("score")))
                     cols[2].metric("Target", _fmt_score_val(target_score))
-                    trust_cols = st.columns(3)
-                    trust_cols[0].metric("CV mean", _fmt_score_val(best.get("cv_mean")))
-                    trust_cols[1].metric("CV std", _fmt_score_val(best.get("cv_std")))
-                    trust_cols[2].metric("95% descriptive interval", _format_interval(best.get("cv_interval_95")))
+                    folds = best.get("cv_folds")
+                    if folds is None:
+                        folds = len(best.get("cv_scores") or [])
+                    trust_cols = st.columns(4)
+                    trust_cols[0].metric("CV folds", folds)
+                    trust_cols[1].metric("CV mean", _fmt_score_val(best.get("cv_mean")))
+                    trust_cols[2].metric("CV std", _fmt_score_val(best.get("cv_std")))
+                    trust_cols[3].metric("95% descriptive interval", _format_interval(best.get("cv_interval_95")))
                     st.markdown(
                         f"**Task type:** `{plan.get('task_type')}` &nbsp;&nbsp; "
                         f"**Target met:** {'✅ Yes' if target_met else '⚠️ No'} &nbsp;&nbsp; "

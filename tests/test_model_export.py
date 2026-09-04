@@ -69,6 +69,16 @@ def test_schema_errors_reject_duplicate_feature_columns():
     assert "city" in str(error.value).lower()
 
 
+def test_schema_errors_name_integer_unexpected_columns():
+    """Catches diagnostics crashing when a DataFrame column label is an integer."""
+    training_frame = pd.DataFrame({7: [20, 30, 40]})
+    export = ValidatedModel(DummyRegressor(), training_frame, "target")
+    supplied = pd.DataFrame({42: [1]})
+
+    with pytest.raises(ValueError, match=r"missing columns: 7; unexpected columns: 42"):
+        export.predict(supplied)
+
+
 @pytest.mark.parametrize("training, supplied, expected_family", [
     (
         pd.DataFrame({"enabled": pd.Series([True, False], dtype="boolean")}),

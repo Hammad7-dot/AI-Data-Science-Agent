@@ -81,7 +81,13 @@ def validation_uncertainty_lines(best: dict | None) -> list[str]:
     if not isinstance(scores, (list, tuple)) or not scores:
         return ["Unavailable: fold-level cross-validation details were not produced."]
 
-    lines = [f"Fold scores: {', '.join(_fmt_score(score) for score in scores)}"]
+    folds = best.get("cv_folds")
+    if folds is None:
+        folds = len(scores)
+    lines = [
+        f"Cross-validation folds: {folds}",
+        f"Fold scores: {', '.join(_fmt_score(score) for score in scores)}",
+    ]
     mean = best.get("cv_mean")
     std = best.get("cv_std")
     if mean is not None and std is not None:

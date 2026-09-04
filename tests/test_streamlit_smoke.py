@@ -8,7 +8,7 @@ from streamlit.testing.v1 import AppTest
 APP_PATH = Path(__file__).resolve().parents[1] / "app" / "streamlit_app.py"
 
 
-def _trust_result(best_model_path=None, *, model_schema=None, explainability=None):
+def _trust_result(best_model_path=None, *, cv_folds=None, model_schema=None, explainability=None):
     return {
         "status": "success",
         "iterations_run": 1,
@@ -24,6 +24,7 @@ def _trust_result(best_model_path=None, *, model_schema=None, explainability=Non
             "feature_engineering": "pipeline",
             "hyperparams": {},
             "cv_scores": [0.8, 0.9, 1.0],
+            "cv_folds": cv_folds,
             "cv_mean": 0.9,
             "cv_std": 0.1,
             "cv_interval_95": [0.7868, 1.0132],
@@ -77,6 +78,7 @@ def test_streamlit_renders_validation_schema_and_explanation_from_result(monkeyp
     at = _run_with_result(monkeypatch, _trust_result(model_schema=schema, explainability=explanation))
 
     assert {metric.label for metric in at.metric} >= {
+        "CV folds",
         "CV mean",
         "CV std",
         "95% descriptive interval",
@@ -88,6 +90,17 @@ def test_streamlit_renders_validation_schema_and_explanation_from_result(monkeyp
         "feature" in frame.value and list(frame.value["feature"]) == ["age", "city_north"]
         for frame in at.dataframe
     )
+
+
+def test_streamlit_displays_cv_fold_count_and_score_length_fallback(monkeypatch):
+    """Catches uncertainty cards that omit the fold count returned by training."""
+    at = _run_with_result(monkeypatch, _trust_result(cv_folds=4))
+    metrics = {metric.label: metric.value for metric in at.metric}
+    assert metrics["CV folds"] == "4"
+
+    at = _run_with_result(monkeypatch, _trust_result())
+    metrics = {metric.label: metric.value for metric in at.metric}
+    assert metrics["CV folds"] == "3"
 
 
 def test_streamlit_uses_promoted_json_when_result_lacks_trust_metadata(tmp_path, monkeypatch):

@@ -58,6 +58,7 @@ def test_report_formats_trust_metadata_and_limits_explanations_to_ten_rows():
             "score": 0.9,
             "status": "success",
             "cv_scores": [0.8, 0.9, 1.0],
+            "cv_folds": 4,
             "cv_mean": 0.9,
             "cv_std": 0.1,
             "cv_interval_95": [0.7868, 1.0132],
@@ -75,6 +76,7 @@ def test_report_formats_trust_metadata_and_limits_explanations_to_ten_rows():
 
     report = _build_report("Predict target", 0.8, result)
 
+    assert "- Cross-validation folds: 4" in report
     assert "- Fold scores: 0.8000, 0.9000, 1.0000" in report
     assert "- Mean ± standard deviation: 0.9000 ± 0.1000" in report
     assert "- 95% descriptive interval: [0.7868, 1.0132]" in report
@@ -106,6 +108,7 @@ def test_cli_prints_validation_and_promoted_trust_artifact_paths(tmp_path, monke
             "metric": "f1",
             "score": 0.9,
             "cv_scores": [0.8, 0.9, 1.0],
+            "cv_folds": 4,
             "cv_mean": 0.9,
             "cv_std": 0.1,
             "cv_interval_95": [0.7868, 1.0132],
@@ -121,6 +124,7 @@ def test_cli_prints_validation_and_promoted_trust_artifact_paths(tmp_path, monke
 
     output = capsys.readouterr().out
     assert "Validation uncertainty:" in output
+    assert "Cross-validation folds: 4" in output
     assert "Fold scores: 0.8000, 0.9000, 1.0000" in output
     assert "95% descriptive interval: [0.7868, 1.0132]" in output
     assert f"Raw input schema artifact: {schema_path}" in output

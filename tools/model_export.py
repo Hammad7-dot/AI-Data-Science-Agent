@@ -17,9 +17,9 @@ def dtype_family(dtype):
 def format_schema_error(missing, unexpected, incompatible, dtype_families):
     parts = []
     if missing:
-        parts.append("missing columns: " + ", ".join(missing))
+        parts.append("missing columns: " + ", ".join(map(str, missing)))
     if unexpected:
-        parts.append("unexpected columns: " + ", ".join(unexpected))
+        parts.append("unexpected columns: " + ", ".join(map(str, unexpected)))
     if incompatible:
         details = ", ".join(
             f"{name} (expected {dtype_families[name]})" for name in incompatible
