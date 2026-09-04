@@ -1,5 +1,7 @@
 # AI Data Science Agent
 
+[**Try the live app on Streamlit**](https://ai-data-science-agent-dmovw4xazskmeascnvtgey.streamlit.app/)
+
 An agent that takes a CSV dataset and a natural-language objective, and
 produces an analysis plan, generates Python code, executes it,
 evaluates cross-validation results, and loops ("Ralph Loop") improving the code
